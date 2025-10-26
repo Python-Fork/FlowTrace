@@ -2,7 +2,7 @@
 name = "flowtrace"
 version = "0.1.0"
 description = "Visual Python execution analyzer using PEP 669 Monitoring API."
-authors = [{ name = "Alexandr", email = "boss191105@bk.ru" }]
+authors = [{ name = "PythonFork", email = "boss191105@bk.ru" }]
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -10,3 +10,8 @@ license = { text = "MIT" }
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/Python-Fork/FlowTrace"
+Documentation = "https://github.com/Python-Fork/FlowTrace/blob/main/README.md"
+Issues = "https://github.com/Python-Fork/FlowTrace/issues"

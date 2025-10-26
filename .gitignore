@@ -1,0 +1,40 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+
+# virtual environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# logs
+*.log
+*.out
+*.err
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# tests / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# OS junk
+.DS_Store
+Thumbs.db

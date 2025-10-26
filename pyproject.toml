@@ -1,0 +1,12 @@
+[project]
+name = "flowtrace"
+version = "0.1.0"
+description = "Visual Python execution analyzer using PEP 669 Monitoring API."
+authors = [{ name = "Alexandr", email = "boss191105@bk.ru" }]
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

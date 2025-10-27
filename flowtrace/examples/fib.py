@@ -4,4 +4,4 @@ from flowtrace import trace
 def fib(n: int) -> int:
     return n if n < 2 else fib(n-1) + fib(n-2)
 
-fib(4)
+fib(3)

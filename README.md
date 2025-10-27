@@ -25,31 +25,32 @@
 
 ---
 
-## 💡 Concept
+## 💡 Example
 
-FlowTrace turns your program’s execution flow into a human-readable **call tree**.
+FlowTrace turns your program’s execution into a clear, readable call tree:
 
 ```python
 from flowtrace import trace
 
 @trace
 def fib(n):
-    return n if n < 2 else fib(n-1) + fib(n-2)
+    return n if n <= 1 else fib(n-1) + fib(n-2)
 
-fib(4)
+fib(3)
 ```
 
 Output:
 ```
-fib(4)
- ├─ fib(3)
- │  ├─ fib(2)
- │  │  ├─ fib(1)
- │  │  └─ fib(0)
- │  └─ fib(1)
- └─ fib(2)
-fib(4) → 3
+fib(3)
+ ├─ fib(2)
+ │  ├─ fib(1)
+ │  └─ fib(0)
+ └─ fib(1)
+fib(3) → 2
 ```
+
+This visualization shows exactly how your code executes —
+each call, each return, and the structure connecting them.
 
 ## ⚙️ Core Principles
 

@@ -10,19 +10,22 @@ from pathlib import Path
 
 @dataclass
 class CallEvent:
+    id: int
     kind: str
     func_name: str
-    ts: float
+    parent_id: Optional[int] = None
+    args_repr: Optional[str] = None
+    result_repr: Optional[str] = None
     duration: Optional[float] = None
     arg: Any = None
-    # Позже добавим filename, lineno, args_repr, result_repr...
+
 
 @dataclass
 class TraceSession:
     active: bool = False
     events: List[CallEvent] = field(default_factory=list)
 
-    _stack: List[tuple[str, float]] = field(default_factory=list)
+    _stack: List[tuple[str, float, int]] = field(default_factory=list)
 
     _cb_start: Optional[callable] = None
     _cb_return: Optional[callable] = None
@@ -67,27 +70,60 @@ class TraceSession:
 
         return self.events
 
-    def on_call(self, func_name: str) -> None:
+    def on_call(self, func_name: str, args=None, kwargs = None) -> None:
         if not self.active:
             return
+
         start_time = perf_counter()
-        self._stack.append((func_name, start_time))
-        self.events.append(CallEvent(kind="call", func_name=func_name, ts=start_time))
+        parent_id = self._stack[-1][2] if self._stack else None
+
+        try:
+            args_repr = ", ".join(map(repr, args)) if args else ""
+            if kwargs:
+                kw_repr = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+                args_repr = f"{args_repr}, {kw_repr}" if args_repr else kw_repr
+            if len(args_repr) > 60:
+                args_repr = args_repr[:57] + "..."
+        except Exception:
+            args_repr = "<unrepr>"
+
+        event_id = len(self.events)
+        self._stack.append((func_name, start_time, event_id))
+        self.events.append(CallEvent(id=event_id,
+                                     kind="call",
+                                     func_name=func_name,
+                                     parent_id=parent_id,
+                                     args_repr=args_repr
+                                )
+                           )
 
     def on_return(self, func_name: str, result: Any = None) -> None:
         if not self.active:
             return
+
         end = perf_counter()
         start = None
-        if self._stack:
-            # снимаем только совпадающую функцию (безопасно при рекурсии)
-            while self._stack:
-                name, s = self._stack.pop()
-                if name == func_name:
-                    start = s
-                    break
+        event_id = None
+        for i in range(len(self._stack) - 1, -1, -1):
+            name, s, eid = self._stack.pop()
+            if name == func_name:
+                start = s
+                event_id = eid
+                break
+
         duration = end - start if start else None
-        self.events.append(CallEvent(kind="return", func_name=func_name, ts=end, duration=duration, arg=result))
+        result_repr = repr(result)
+        if len(result_repr) > 60:
+            result_repr = result_repr[:57] + "..."
+
+        self.events.append(CallEvent(id=len(self.events),
+                                     kind="return",
+                                     func_name=func_name,
+                                     parent_id=event_id,
+                                     result_repr=result_repr,
+                                     duration=duration
+                                )
+                           )
 
 def _reserve_tool_id(name: str = "flowtrace") -> int:
     for tool_id in range(1, 6):
@@ -102,7 +138,6 @@ def _reserve_tool_id(name: str = "flowtrace") -> int:
         "Close any active debuggers or profilers and try again"
     )
 
-# Глобальная текущая сессия. MVP: одна сессия на декоратор
 _current: Optional[TraceSession] = None
 _last_data: Optional[List[CallEvent]] = None
 _PROJECT_ROOT = Path(os.getcwd()).resolve()

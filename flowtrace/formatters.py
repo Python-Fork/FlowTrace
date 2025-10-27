@@ -28,7 +28,6 @@ def print_events_debug(events: List[CallEvent] | None = None) -> None:
     for event in events:
         print(_format_event(event))
 
-
 def print_summary(events: List[CallEvent] | None = None) -> None:
     """Выводит краткую сводку (кол-во вызовов, время, последняя функция)."""
     if events is None:
@@ -42,3 +41,22 @@ def print_summary(events: List[CallEvent] | None = None) -> None:
     duration = sum((e.duration or 0.0) for e in events)
     last_func = events[-1].func_name if events else "—"
     print(f"[flowtrace] {total} событий, {duration:.6f}s, последняя функция: {last_func}")
+
+def print_tree(events: list[CallEvent]):
+    children = {e.id: [] for e in events}
+    roots = []
+    for e in events:
+        if e.parent_id is not None and e.parent_id in children:
+            children[e.parent_id].append(e)
+        else:
+            roots.append(e)
+
+    def walk(node, prefix=""):
+        arg_info = f"({node.args_repr})" if node.args_repr else "()"
+        dur_info = f" [{node.duration:.6f}s]" if node.duration else ""
+        print(f"{prefix}→ {node.func_name}{arg_info}{dur_info}")
+        for child in children[node.id]:
+            walk(child, prefix + "  ")
+
+    for root in roots:
+        walk(root)

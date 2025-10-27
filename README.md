@@ -1,9 +1,9 @@
 > 🌐 This document is available in other languages: [Русская версия](README.ru.md)
 # 🌀 FlowTrace — Visual Execution Analyzer for Python (3.12+)
 
-> **FlowTrace** is an educational library for visualizing and understanding Python code execution.  
-> It shows *how your code actually runs* — which functions call which, with what arguments, what they return, and how long it all takes.
-
+>FlowTrace is a system-level tracer for Python 3.12+.
+>Unlike traditional profilers, FlowTrace doesn’t measure performance — it reconstructs the program’s execution in real time. It tracks function calls, exceptions, asynchronous transitions, and call structures without modifying the code or introducing significant overhead.
+>FlowTrace connects directly to the interpreter’s Monitoring API, analyzing execution events at the bytecode level. This allows for system-wide observation of Python applications — from individual functions to the entire process — without interfering with standard I/O streams, using monkey-patching, or producing redundant output.
 ---
 
 ## 🎯 Project Goals
@@ -17,7 +17,7 @@
 
 ## 📘 MVP (v0.1)
 
-- [ ] Implement basic execution tracing via `sys.monitoring` (PEP 669).
+- [x] Implement basic execution tracing via `sys.monitoring` (PEP 669).
 - [ ] Support both synchronous and asynchronous function calls.
 - [ ] Display call trees directly in the CLI.
 - [ ] Save structured execution data in JSON.
@@ -88,5 +88,4 @@ FlowTrace is open to contributors — its goal is not only to provide a tool,
 but to serve as a learning ground for exploring the internals of Python 3.12+.
 
 ## 🧠 FlowTrace is not a profiler.
-
 It’s an X-ray of Python code — a way to see your program’s logic in motion.

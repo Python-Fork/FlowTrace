@@ -1,5 +1,5 @@
 from flowtrace import start_tracing, stop_tracing
-from flowtrace.formatters import print_tree, print_summary, print_events_debug
+from flowtrace.formatters import print_tree
 
 def add(a, b):
     return a + b
@@ -22,9 +22,7 @@ def main():
     result = nested_example(3)
     events = stop_tracing()
 
-    print("[flowtrace] дерево вызовов:")
     print_tree(events)
-    print(f"\nРезультат: {result}")
 
 if __name__ == "__main__":
     main()

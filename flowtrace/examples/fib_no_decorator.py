@@ -1,4 +1,4 @@
-from flowtrace import trace, start_tracing, stop_tracing
+from flowtrace import start_tracing, stop_tracing
 from flowtrace.formatters import print_tree
 
 

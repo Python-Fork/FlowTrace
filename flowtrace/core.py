@@ -29,7 +29,7 @@ class TraceSession:
         self.events: list[CallEvent] = []
         self.stack: list[tuple[str, float, int]] = []
 
-        self.pending_args_0: dict[str, deque[str]] = defaultdict(deque)
+        self.pending_args_0: deque[str] = deque()
         self.pending_args: dict[Any, deque[str]] = defaultdict(deque)
 
         self._cb_start: Optional[callable] = None
@@ -97,11 +97,8 @@ class TraceSession:
 
         # Если нет декоратора
         if arg_info is None:
-            q = self.pending_args_0.get(func_name)
-            if q:
-                arg_info = q.popleft()
-                if not q:
-                    self.pending_args_0.pop(func_name, None)
+            if self.pending_args_0:
+                arg_info = self.pending_args_0.popleft()
             else:
                 arg_info = ""
 
@@ -219,7 +216,7 @@ def _on_event(label: str, code, raw_args):
         arg_repr = repr(arg0) if arg0 is not None else None
         if arg_repr and len(arg_repr) > 40:
             arg_repr = arg_repr[:37] + "..."
-        sess.pending_args_0[code.co_name].append(arg_repr)
+        sess.pending_args_0.append(arg_repr)
     elif label == "PY_START":
         sess.on_call(func)
     elif label == "PY_RETURN":

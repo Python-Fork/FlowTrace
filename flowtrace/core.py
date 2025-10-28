@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, List, Optional
 from pathlib import Path
-from collections import deque
+from collections import deque, defaultdict
+
 
 @dataclass
 class CallEvent:
@@ -28,7 +29,8 @@ class TraceSession:
         self.events: list[CallEvent] = []
         self.stack: list[tuple[str, float, int]] = []
 
-        self._pending_arg = None
+        self.pending_args_0: dict[str, deque[str]] = defaultdict(deque)
+        self.pending_args: dict[Any, deque[str]] = defaultdict(deque)
 
         self._cb_start: Optional[callable] = None
         self._cb_return: Optional[callable] = None
@@ -78,27 +80,30 @@ class TraceSession:
 
         return self.events
 
-    def on_pre_call(self, callable_object, arg0):
-        """Срабатывает до PY_START. Мы знаем кто вызывает и что передано как первый аргумент
-        (для асинхронных функций не подойдет)"""
-        try:
-            name = getattr(callable_object, "__qualname__", repr(callable_object))
-            arg_repr = repr(arg0) if arg0 is not None else None
-            if arg_repr and len(arg_repr) > 40:
-                arg_repr = arg_repr[:37] + "..."
-            self._pending_arg = arg_repr
-        except Exception:
-            self._pending_arg = None
-
-    def on_call(self, func_name: str, args = None, kwargs = None) -> None:
+    def on_call(self, func_name: str) -> None:
         if not self.active:
             return
 
         start_time = perf_counter()
         parent_id = self.stack[-1][2] if self.stack else None
 
-        arg_info = self._pending_arg or ""
-        self._pending_arg = None
+        # Пытаемся взять аргументы от декоратора
+        arg_info = None
+        q = self.pending_args.get(func_name)
+        if q:
+            arg_info = q.popleft()
+            if not q:
+                self.pending_args.pop(func_name, None)
+
+        # Если нет декоратора
+        if arg_info is None:
+            q = self.pending_args_0.get(func_name)
+            if q:
+                arg_info = q.popleft()
+                if not q:
+                    self.pending_args_0.pop(func_name, None)
+            else:
+                arg_info = ""
 
         event_id = len(self.events)
         self.stack.append((func_name, start_time, event_id))
@@ -137,6 +142,26 @@ class TraceSession:
                                      duration=duration
                                 )
                            )
+
+    def push_args_for_code(self, func_name, args, kwargs):
+        """Кладёт форматированные аргументы(от декоратора в очередь для данного code(объекта).
+        Забираются при ближайшем PY_START этой функции (в порядке вызовов)."""
+        if not self.active:
+            return
+        try:
+            parts = []
+            if args:
+                parts.extend(repr(arg) for arg in args)
+            if kwargs:
+                parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
+
+            args_repr = ", ".join(parts)
+
+            if len(args_repr) > 200:
+                args_repr = args_repr[:197] + "..."
+        except Exception:
+            args_repr = "<unrepr>"
+        self.pending_args[func_name].append(args_repr)
 
 def _reserve_tool_id(name: str = "flowtrace") -> int:
     for tool_id in range(1, 6):
@@ -190,8 +215,11 @@ def _on_event(label: str, code, raw_args):
     func = code.co_name
 
     if label == "CALL":
-        callable_object, arg0 = raw_args[2:]
-        sess.on_pre_call(callable_object, arg0)
+        arg0 = raw_args[-1]
+        arg_repr = repr(arg0) if arg0 is not None else None
+        if arg_repr and len(arg_repr) > 40:
+            arg_repr = arg_repr[:37] + "..."
+        sess.pending_args_0[code.co_name].append(arg_repr)
     elif label == "PY_START":
         sess.on_call(func)
     elif label == "PY_RETURN":

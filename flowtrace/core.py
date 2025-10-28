@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import sys
 
-from dataclasses import dataclass, field
-from time import perf_counter, process_time_ns
+from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, List, Optional
 from pathlib import Path
+from collections import deque
 
 @dataclass
 class CallEvent:
@@ -22,13 +23,16 @@ class CallEvent:
 
 @dataclass
 class TraceSession:
-    active: bool = False
-    events: List[CallEvent] = field(default_factory=list)
+    def __init__(self):
+        self.active: bool = False
+        self.events: list[CallEvent] = []
+        self.stack: list[tuple[str, float, int]] = []
 
-    _stack: List[tuple[str, float, int]] = field(default_factory=list)
+        self._pending_arg = None
 
-    _cb_start: Optional[callable] = None
-    _cb_return: Optional[callable] = None
+        self._cb_start: Optional[callable] = None
+        self._cb_return: Optional[callable] = None
+        self._cb_call: Optional[callable] = None
 
     def start(self) -> None:
         if self.active:
@@ -37,13 +41,17 @@ class TraceSession:
 
         self._cb_start = _make_handler("PY_START")
         self._cb_return = _make_handler("PY_RETURN")
+        self._cb_call = _make_handler("CALL")
 
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_START, self._cb_start)
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_RETURN, self._cb_return)
+        sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.CALL, self._cb_call)
 
         sys.monitoring.set_events(
             TOOL_ID,
-            sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+            sys.monitoring.events.CALL |
+            sys.monitoring.events.PY_START |
+            sys.monitoring.events.PY_RETURN
         )
 
     def stop(self) -> list[CallEvent]:
@@ -70,30 +78,35 @@ class TraceSession:
 
         return self.events
 
-    def on_call(self, func_name: str, args=None, kwargs = None) -> None:
+    def on_pre_call(self, callable_object, arg0):
+        """Срабатывает до PY_START. Мы знаем кто вызывает и что передано как первый аргумент
+        (для асинхронных функций не подойдет)"""
+        try:
+            name = getattr(callable_object, "__qualname__", repr(callable_object))
+            arg_repr = repr(arg0) if arg0 is not None else None
+            if arg_repr and len(arg_repr) > 40:
+                arg_repr = arg_repr[:37] + "..."
+            self._pending_arg = arg_repr
+        except Exception:
+            self._pending_arg = None
+
+    def on_call(self, func_name: str, args = None, kwargs = None) -> None:
         if not self.active:
             return
 
         start_time = perf_counter()
-        parent_id = self._stack[-1][2] if self._stack else None
+        parent_id = self.stack[-1][2] if self.stack else None
 
-        try:
-            args_repr = ", ".join(map(repr, args)) if args else ""
-            if kwargs:
-                kw_repr = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-                args_repr = f"{args_repr}, {kw_repr}" if args_repr else kw_repr
-            if len(args_repr) > 60:
-                args_repr = args_repr[:57] + "..."
-        except Exception:
-            args_repr = "<unrepr>"
+        arg_info = self._pending_arg or ""
+        self._pending_arg = None
 
         event_id = len(self.events)
-        self._stack.append((func_name, start_time, event_id))
+        self.stack.append((func_name, start_time, event_id))
         self.events.append(CallEvent(id=event_id,
                                      kind="call",
                                      func_name=func_name,
                                      parent_id=parent_id,
-                                     args_repr=args_repr
+                                     args_repr=arg_info
                                 )
                            )
 
@@ -104,8 +117,8 @@ class TraceSession:
         end = perf_counter()
         start = None
         event_id = None
-        for i in range(len(self._stack) - 1, -1, -1):
-            name, s, eid = self._stack.pop()
+        for i in range(len(self.stack) - 1, -1, -1):
+            name, s, eid = self.stack.pop()
             if name == func_name:
                 start = s
                 event_id = eid
@@ -176,11 +189,13 @@ def _on_event(label: str, code, raw_args):
 
     func = code.co_name
 
-    if label == "PY_START":
+    if label == "CALL":
+        callable_object, arg0 = raw_args[2:]
+        sess.on_pre_call(callable_object, arg0)
+    elif label == "PY_START":
         sess.on_call(func)
     elif label == "PY_RETURN":
-        # raw_args обычно содержит result на позиции 3, но иногда — None
-        result = raw_args[-1] if len(raw_args) >= 4 else None
+        result = raw_args[-1]
         sess.on_return(func, result)
 
 def _make_handler(event_label: str):

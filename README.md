@@ -17,11 +17,13 @@
 
 ## 📘 MVP (v0.1)
 
-- [x] Implement basic execution tracing via `sys.monitoring` (PEP 669).
-- [ ] Support both synchronous and asynchronous function calls.
-- [ ] Display call trees directly in the CLI.
-- [ ] Save structured execution data in JSON.
-- [ ] Include minimal documentation and usage examples.
+- [x] Implement basic tracing via `sys.monitoring` (PEP 669).
+- [x] Display hierarchical call trees in the CLI (`print_tree`).
+- [x] Show function arguments and return values.
+- [ ] Support `async` functions and coroutines.
+- [ ] Add JSON export for trace data.
+- [x] Provide minimal documentation and examples (`docs/`, `README`).
+- [x] Establish project philosophy and guiding principles (`docs/philosophy.md`).
 
 ---
 

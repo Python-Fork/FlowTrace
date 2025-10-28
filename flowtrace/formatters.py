@@ -42,21 +42,24 @@ def print_summary(events: List[CallEvent] | None = None) -> None:
     last_func = events[-1].func_name if events else "—"
     print(f"[flowtrace] {total} событий, {duration:.6f}s, последняя функция: {last_func}")
 
-def print_tree(events: list[CallEvent]):
-    children = {e.id: [] for e in events}
-    roots = []
-    for e in events:
-        if e.parent_id is not None and e.parent_id in children:
-            children[e.parent_id].append(e)
+
+def print_tree(events: list, indent: int = 0, parent_id: int | None = None):
+    indent_str = "  " * indent
+
+    calls = [e for e in events if e.kind == "call" and e.parent_id == parent_id]
+
+    for call in calls:
+        children = [e for e in events if e.kind == "call" and e.parent_id == call.id]
+        ret = next((r for r in events if r.kind == "return" and r.parent_id == call.id), None)
+
+        args = f"({call.args_repr})" if call.args_repr else "()"
+        dur = f"[{ret.duration:.6f}s]" if (ret and ret.duration) else ""
+        result = f"→ {ret.result_repr}" if (ret and ret.result_repr) else ""
+
+        if not children:
+            print(f"{indent_str}→ {call.func_name}{args} {dur} {result}")
         else:
-            roots.append(e)
-
-    def walk(node, prefix=""):
-        arg_info = f"({node.args_repr})" if node.args_repr else "()"
-        dur_info = f" [{node.duration:.6f}s]" if node.duration else ""
-        print(f"{prefix}→ {node.func_name}{arg_info}{dur_info}")
-        for child in children[node.id]:
-            walk(child, prefix + "  ")
-
-    for root in roots:
-        walk(root)
+            # иначе — раскрываем полностью
+            print(f"{indent_str}→ {call.func_name}{args}")
+            print_tree(events, indent + 1, call.id)
+            print(f"{indent_str}← {call.func_name}{args} {dur} {result}")

@@ -9,6 +9,8 @@ from typing import Any, List, Optional
 from pathlib import Path
 from collections import defaultdict
 
+from flowtrace.config import get_config
+
 
 @dataclass
 class CallEvent:
@@ -16,21 +18,37 @@ class CallEvent:
     kind: str
     func_name: str
     parent_id: Optional[int] = None
+
+    # payload (заполняются строго по флагам)
     args_repr: Optional[str] = None
     result_repr: Optional[str] = None
     duration: Optional[float] = None
-    measure_time: bool = False
+
+    # флаги того, что ДОЛЖНО было собираться для этого вызова
+    collect_args: bool = False
+    collect_result: bool = False
+    collect_timing: bool = False
 
 
-@dataclass
 class TraceSession:
-    def __init__(self, default_measure_time: bool = False):
+    def __init__(
+        self,
+        default_collect_args: bool = True,
+        default_collect_result: bool = True,
+        default_collect_timing: bool = True,
+    ):
         self.active: bool = False
-        self.default_measure_time = default_measure_time
+
+        self.default_collect_args = default_collect_args
+        self.default_collect_result = default_collect_result
+        self.default_collect_timing = default_collect_timing
+
         self.events: list[CallEvent] = []
         self.stack: list[tuple[str, float, int]] = []
 
-        self.pending_args: dict[Any, list[tuple[str, bool]]] = defaultdict(list)
+        # очередь метаданных от декоратора для КОНКРЕТНОГО следующего вызова функции
+        # func_name -> list of (args_repr, collect_args, collect_result, collect_timing)
+        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool]]] = defaultdict(list)
 
         self._cb_start: Optional[callable] = None
         self._cb_return: Optional[callable] = None
@@ -82,26 +100,34 @@ class TraceSession:
 
         parent_id = self.stack[-1][2] if self.stack else None
 
-        arg_info = ""
-        measure_time = self.default_measure_time
-        q = self.pending_args.get(func_name)
-        if q:
-            arg_info, measure_time = q.pop(0)
-            if not q:
-                self.pending_args.pop(func_name, None)
+        collect_args = self.default_collect_args
+        collect_result = self.default_collect_result
+        collect_timing = self.default_collect_timing
+        args_repr: str | None = None
 
-        start_time = perf_counter() if measure_time else 0.0
+        q = self.pending_meta.get(func_name)
+        if q:
+            # данные только для ЭТОГО вызова; на детей не «протекают»
+            args_repr, collect_args, collect_result, collect_timing = q.pop(0)
+            if not q:
+                self.pending_meta.pop(func_name, None)
+
+        start_time = perf_counter() if collect_timing else 0.0
 
         event_id = len(self.events)
         self.stack.append((func_name, start_time, event_id))
-        self.events.append(CallEvent(id=event_id,
-                                     kind="call",
-                                     func_name=func_name,
-                                     parent_id=parent_id,
-                                     args_repr=arg_info,
-                                     measure_time=measure_time,
-                                     )
-                           )
+        self.events.append(
+            CallEvent(
+                id=event_id,
+                kind="call",
+                func_name=func_name,
+                parent_id=parent_id,
+                args_repr=args_repr if collect_args else None,
+                collect_args=collect_args,
+                collect_result=collect_result,
+                collect_timing=collect_timing,
+            )
+        )
 
     def on_return(self, func_name: str, result: Any = None) -> None:
         if not self.active:
@@ -117,44 +143,49 @@ class TraceSession:
             return
 
         name, start, event_id = self.stack[frame_index]
-        measure_time = self.events[event_id].measure_time
+        call_ev = self.events[event_id]
+        collect_timing = call_ev.collect_timing
+        collect_result = call_ev.collect_result
+
         del self.stack[frame_index:]
 
-        end = perf_counter() if measure_time else None
-        duration = (end - start) if (start and measure_time) else None
+        end = perf_counter() if collect_timing else None
+        duration = (end - start) if (start and collect_timing) else None
 
-        result_repr = repr(result)
-        if len(result_repr) > 60:
-            result_repr = result_repr[:57] + "..."
+        result_repr: str | None = None
+        if collect_result:
+            try:
+                r = repr(result)
+                if len(r) > 60:
+                    r = r[:57] + "..."
+                result_repr = r
+            except Exception:
+                result_repr = "<unrepr>"
 
-        self.events.append(CallEvent(id=len(self.events),
-                                     kind="return",
-                                     func_name=func_name,
-                                     parent_id=event_id,
-                                     result_repr=result_repr,
-                                     duration=duration
-                                     )
-                           )
+        self.events.append(
+            CallEvent(
+                id=len(self.events),
+                kind="return",
+                func_name=func_name,
+                parent_id=event_id,
+                result_repr=result_repr,
+                duration=duration,
+            )
+        )
 
-    def push_args_for_code(self, func_name, args, kwargs, measure_time: bool = True):
-        """Кладёт форматированные аргументы(от декоратора в очередь для данного code(объекта).
-        Забираются при ближайшем PY_START этой функции (в порядке вызовов)."""
+    def push_meta_for_func(
+        self,
+        func_name: str,
+        *,
+        args_repr: str | None,
+        collect_args: bool,
+        collect_result: bool,
+        collect_timing: bool,
+    ):
+        """Кладём готовые метаданные ДЛЯ СЛЕДУЮЩЕГО вызова данной функции."""
         if not self.active:
             return
-        try:
-            parts = []
-            if args:
-                parts.extend(repr(arg) for arg in args)
-            if kwargs:
-                parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
-
-            args_repr = ", ".join(parts)
-
-            if len(args_repr) > 200:
-                args_repr = args_repr[:197] + "..."
-        except Exception:
-            args_repr = "<unrepr>"
-        self.pending_args[func_name].append((args_repr, measure_time))
+        self.pending_meta[func_name].append((args_repr, collect_args, collect_result, collect_timing))
 
 
 def _reserve_tool_id(name: str = "flowtrace") -> int:
@@ -219,7 +250,7 @@ def _make_handler(event_label: str):
         if not args:
             return
         code = args[0]
-        if not _is_user_code(code):  # фильтр снова активен
+        if not _is_user_code(code):
             return
         try:
             _on_event(event_label, code, args)
@@ -229,8 +260,19 @@ def _make_handler(event_label: str):
     return handler
 
 
-def start_tracing(default_measure_time: bool = False) -> None:
-    sess = TraceSession(default_measure_time=default_measure_time)
+
+def start_tracing(
+    default_show_args: bool | None = None,
+    default_show_result: bool | None = None,
+    default_show_timing: bool | None = None,
+) -> None:
+    cfg = get_config()
+
+    sess = TraceSession(
+        default_collect_args=cfg["show_args"] if default_show_args is None else default_show_args,
+        default_collect_result=cfg["show_result"] if default_show_result is None else default_show_result,
+        default_collect_timing = cfg["show_timing"] if default_show_timing is None else default_show_timing
+    )
     sess.start()
     setattr(sys.monitoring, "_flowtrace_session", sess)
 

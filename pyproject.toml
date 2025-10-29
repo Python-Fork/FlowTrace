@@ -1,6 +1,6 @@
 [project]
 name = "flowtrace"
-version = "0.1.1"
+version = "0.1.3"
 description = "System-level execution tracer for Python 3.12+ (PEP 669)"
 authors = [{ name = "Alexandr153", email = "boss191105@bk.ru" }]
 readme = "README.md"

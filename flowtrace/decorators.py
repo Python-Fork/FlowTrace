@@ -8,7 +8,7 @@ from .formatters import print_tree
 
 F = TypeVar("F", bound=Callable[..., Any])
 
-def trace(func: F | None = None, *, measure_time: bool = True) -> F:
+def trace(func: F | None = None, *, measure_time: bool = False) -> F:
     def decorator(real_func: F) -> F:
         @wraps(real_func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:

@@ -1,94 +1,143 @@
-> 🌐 This document is available in other languages: [Русская версия](README.ru.md)
-# 🌀 FlowTrace — Visual Execution Analyzer for Python (3.12+)
+> 🌐 Also available in: [Русская версия](README.ru.md)
+# 🌀 FlowTrace — Visual Execution Tracing for Python 3.12+
 
->FlowTrace is a system-level tracer for Python 3.12+.
->Unlike traditional profilers, FlowTrace doesn’t measure performance — it reconstructs the program’s execution in real time. It tracks function calls, exceptions, asynchronous transitions, and call structures without modifying the code or introducing significant overhead.
->FlowTrace connects directly to the interpreter’s Monitoring API, analyzing execution events at the bytecode level. This allows for system-wide observation of Python applications — from individual functions to the entire process — without interfering with standard I/O streams, using monkey-patching, or producing redundant output.
----
+>FlowTrace is a system-level tracer built on Python’s Monitoring API (PEP 669).
+>It doesn’t “profile time by default”. Instead, it reconstructs what happened in your program — calls, returns,
+>structure — with minimal overhead and zero monkey-patching.
 
-## 🎯 Project Goals
-
-- Help Python developers build intuition about *how the interpreter executes code*.
-- Provide a lightweight, fast, asyncio-compatible tracing tool.
-- Enable learning through introspection — **see**, **understand**, and **explain**.
-- Keep the output simple, textual, and readable — no web interfaces or IDE plugins.
+> **Status**: experimental alpha. Python 3.12+ only.
 
 ---
-
-## 📘 MVP (v0.1)
-
-- [x] Implement basic tracing via `sys.monitoring` (PEP 669).
-- [x] Display hierarchical call trees in the CLI (`print_tree`).
-- [x] Show function arguments and return values.
-- [ ] Support `async` functions and coroutines.
-- [ ] Add JSON export for trace data.
-- [x] Provide minimal documentation and examples (`docs/`, `README`).
-- [x] Establish project philosophy and guiding principles (`docs/philosophy.md`).
-
+## Installation
+```
+pip install flowtrace
+```
 ---
-
-## 💡 Example
-
-FlowTrace turns your program’s execution into a clear, readable call tree:
-
+## Quick Start
+### 1) One-line decorator
 ```python
 from flowtrace import trace
 
 @trace
 def fib(n):
-    return n if n <= 1 else fib(n-1) + fib(n-2)
+    return n if n < 2 else fib(n-1) + fib(n-2)
 
 fib(3)
 ```
 
 Output:
+
 ```
-fib(3)
- ├─ fib(2)
- │  ├─ fib(1)
- │  └─ fib(0)
- └─ fib(1)
-fib(3) → 2
+→ fib(3)
+  → fib(2)
+    → fib(1) → 1
+    → fib(0) → 0
+  ← fib(2) → 1
+  → fib(1) → 1
+← fib(3) → 2
 ```
-
-This visualization shows exactly how your code executes —
-each call, each return, and the structure connecting them.
-
-## ⚙️ Core Principles
-
-- Modern foundation: built on the [PEP 669](https://peps.python.org/pep-0669/) 
-  Monitoring API (Python 3.12+),
-  replacing the old sys.settrace mechanism for faster, asyncio-safe performance.
-
-- Simplicity first: just one decorator — @trace.
-
-- CLI-based output: all visualization happens in the terminal or via JSON export.
-  The focus is on clarity and accessibility.
-
-- Async compatibility: supports coroutines and async tasks transparently.
-
-- Structured API: get structured trace data for further analysis:
-
+---
+## 2) Timing when you need it
 ```python
-data = flowtrace.get_trace_data()
+from flowtrace import trace
+
+@trace(measure_time=True)
+def compute(a, b):
+    return a * b
+
+compute(6, 7)
 ```
 
-## 🧰 Planned Features
+Output:
 
-- Cross-platform color output.
+```
+→ compute(6, 7) [0.000265s] → 42
+```
+---
+## 3) Manual session
+```python
+from flowtrace import start_tracing, stop_tracing, print_tree
 
-- output parameter for writing execution data to a file.
+def fib(n):
+    return n if n < 2 else fib(n-1) + fib(n-2)
 
-- Customizable formatters (minimal / verbose styles).
+start_tracing()
+fib(3)
+events = stop_tracing()
+print_tree(events)
+```
 
-- Include/exclude filters by module or function.
+Output:
+```
+→ fib()
+  → fib()
+    → fib()  → 1
+    → fib()  → 0
+  ← fib()  → 1
+  → fib()  → 1
+← fib()  → 2
+```
+---
+## Why FlowTrace?
 
-- Run comparison for analyzing behavioral differences.
+- **Not a profiler**: profilers answer “how long”. FlowTrace answers “what, in which order, and why”.
 
-## 🤝 Contributing
+- **Direct line to the VM**: listens to bytecode-level events via sys.monitoring (PEP 669).
 
-FlowTrace is open to contributors — its goal is not only to provide a tool,
-but to serve as a learning ground for exploring the internals of Python 3.12+.
+- **No code intrusion**: no sys.settrace, no monkey-patching, no stdout noise.
 
-## 🧠 FlowTrace is not a profiler.
-It’s an X-ray of Python code — a way to see your program’s logic in motion.
+---
+
+## API (current)
+```python
+from flowtrace import trace, start_tracing, stop_tracing, get_trace_data, print_tree
+```
+
+-  ```@trace(measure_time: bool = True)```
+Decorate a function to include its calls in the trace.
+When ```measure_time=True```, durations for this function’s calls are recorded.
+
+- ```start_tracing()``` / ```stop_tracing() -> list[CallEvent]```
+Start/stop a process-wide tracing session. By default no timing is recorded here — only structure.
+
+- ```get_trace_data() -> list[CallEvent]```
+Access the last recorded events.
+
+- ```print_tree(events)```
+Pretty-print a hierarchical call tree.
+    
+### Event model (```CallEvent```):
+``` python
+id: int
+kind: str           
+func_name: str
+parent_id: int | None
+args_repr: str | None
+result_repr: str | None
+duration: float | None    
+```
+---
+## Design choices (snapshot)
+
+- **Only ```PY_START``` / ```PY_RETURN```**: we do not listen to ```CALL``` to keep the core lean.
+Argument strings are provided by the decorator right before the call starts.
+
+- **Timing is opt-in**: ```perf_counter()``` is used only when ```measure_time=True```.
+Starting/stopping a session alone does not add timing overhead.
+
+- **Filter user code**: internal modules and site-packages are excluded from the default output.
+---
+## Roadmap
+
+- **Async/coroutine transitions.**
+
+- **JSON export for post-processing.**
+
+- **Include/exclude filters & colorized output.**
+
+- **Minimal CLI helpers.**
+
+---
+## Contributing
+
+We welcome small, surgical PRs. The codebase is intentionally compact to be an approachable learning tool for exploring Python 3.12+ internals.

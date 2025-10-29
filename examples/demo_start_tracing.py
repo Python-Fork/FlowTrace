@@ -1,5 +1,4 @@
-from flowtrace import start_tracing, stop_tracing
-from flowtrace.formatters import print_tree
+from flowtrace import start_tracing, stop_tracing, print_tree
 
 def alpha(x): return beta(x + 1)
 def beta(y): return y * 2

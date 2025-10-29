@@ -1,5 +1,4 @@
-from flowtrace import start_tracing, stop_tracing
-from flowtrace.formatters import print_tree
+from flowtrace import start_tracing, stop_tracing, print_tree
 
 def fib(n):
     return n if n < 2 else fib(n-1) + fib(n-2)

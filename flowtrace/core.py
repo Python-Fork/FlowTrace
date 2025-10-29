@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -171,7 +172,6 @@ def _reserve_tool_id(name: str = "flowtrace") -> int:
     )
 
 
-_current: Optional[TraceSession] = None
 _last_data: Optional[List[CallEvent]] = None
 TOOL_ID = _reserve_tool_id()
 
@@ -182,18 +182,20 @@ def _is_user_code(code) -> bool:
     except Exception:
         return False
 
+    str_path = str(path)
     here = Path(__file__).resolve().parent
-    if str(path).startswith(str(here / "examples")):
+
+    if str_path.startswith(str(here / "examples")):
         return True
 
-    if str(path).startswith(str(here)):
+    if str_path.startswith(str(here)):
         return False
 
     for prefix in (sys.prefix, sys.base_prefix):
-        if str(path).startswith(str(Path(prefix).resolve())):
+        if str_path.startswith(str(Path(prefix).resolve())):
             return False
 
-    if "site-packages" in str(path):
+    if "site-packages" in str_path:
         return False
 
     return True
@@ -223,16 +225,14 @@ def _make_handler(event_label: str):
         try:
             _on_event(event_label, code, args)
         except Exception as e:
-            print("[flowtrace-debug] handler error:", e)
+            logging.debug("[flowtrace-debug] handler error:", e)
 
     return handler
 
 
-def start_tracing() -> None:
-    global _current
-    sess = TraceSession()
+def start_tracing(default_measure_time: bool = False) -> None:
+    sess = TraceSession(default_measure_time=default_measure_time)
     sess.start()
-    _current = sess
     setattr(sys.monitoring, "_flowtrace_session", sess)
 
 
@@ -242,13 +242,12 @@ def is_tracing_active() -> bool:
 
 
 def stop_tracing() -> List[CallEvent]:
-    global _current, _last_data
+    global  _last_data
     sess = getattr(sys.monitoring, "_flowtrace_session", None)
     if not sess:
         return []
     data = sess.stop()
     _last_data = data
-    _current = None
     setattr(sys.monitoring, "_flowtrace_session", None)
     return data
 

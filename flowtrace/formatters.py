@@ -6,7 +6,7 @@ def _format_event(event: CallEvent) -> str:
     if event.kind == "call":
         return f"    call    {event.func_name}"
     elif event.kind == "return":
-        res = f" → {event.arg!r}" if event.arg is not None else ""
+        res = f" → {event.result_repr}" if event.result_repr is not None else ""
         dur = f" ({event.duration:.6f}s)" if event.duration is not None else ""
         return f"    return  {event.func_name}{res}{dur}"
     return f"    {event.kind:7} {event.func_name}"

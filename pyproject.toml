@@ -1,11 +1,19 @@
 [project]
 name = "flowtrace"
-version = "0.1.0"
-description = "Visual Python execution analyzer using PEP 669 Monitoring API."
-authors = [{ name = "PythonFork", email = "boss191105@bk.ru" }]
+version = "0.1.1"
+description = "System-level execution tracer for Python 3.12+ (PEP 669)"
+authors = [{ name = "Alexandr153", email = "boss191105@bk.ru" }]
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
+keywords = ["python", "monitoring", "tracing", "PEP669", "async"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Debuggers",
+]
+dependencies = []
 
 [build-system]
 requires = ["setuptools>=61.0"]

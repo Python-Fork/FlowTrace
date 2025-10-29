@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Python-Fork/FlowTrace/main/logo.png" width="200" alt="FlowTrace logo">
+</p>
 > 🌐 Also available in: [Русская версия](README.ru.md)
 # 🌀 FlowTrace — Visual Execution Tracing for Python 3.12+
 

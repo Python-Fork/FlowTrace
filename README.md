@@ -173,6 +173,11 @@ collect_timing: bool
 - **Only ```PY_START``` / ```PY_RETURN```**: we do not listen to ```CALL``` to keep the core lean.
 Argument strings are provided by the decorator right before the call starts.
 
+- **Exception lifecycle tracing**: FlowTrace now listens to exception-related
+  signals (`RAISE`, `RERAISE`, `EXCEPTION_HANDLED`, `PY_UNWIND`).
+  Each function frame produces at most one exception event, labeled as
+  `[caught]` (handled locally) or `[propagated]` (escaped outward).
+
 - **Timing is opt-in**: ```perf_counter()``` is used only when ```measure_time=True```.
 Starting/stopping a session alone does not add timing overhead.
 

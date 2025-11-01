@@ -13,7 +13,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def trace(func: F | None = None, *, show_args: bool | None = None, show_result: bool | None = None,
-          show_timing: bool | None = None) -> F:
+          show_timing: bool | None = None, show_exc: bool | int | None = None, exc_tb_depth: int = 2) -> F:
     def decorator(real_func: F) -> F:
         sig = inspect.signature(real_func)
 
@@ -42,6 +42,11 @@ def trace(func: F | None = None, *, show_args: bool | None = None, show_result: 
             collect_args = show_args if show_args is not None else cfg["show_args"]
             collect_result = show_result if show_result is not None else cfg["show_result"]
             collect_timing = show_timing if show_timing is not None else cfg["show_timing"]
+            collect_exc = bool(show_exc) if show_exc is not None else cfg["show_exc"]
+            if isinstance(show_exc, bool) or show_exc is None:
+                depth = exc_tb_depth
+            else:
+                depth = int(show_exc)
 
             args_repr = _format_named_args(args, kwargs) if collect_args else None
 
@@ -53,6 +58,8 @@ def trace(func: F | None = None, *, show_args: bool | None = None, show_result: 
                     collect_args=collect_args,
                     collect_result=collect_result,
                     collect_timing=collect_timing,
+                    collect_exc_tb=collect_exc,
+                    exc_tb_depth=depth,
                 )
 
             try:

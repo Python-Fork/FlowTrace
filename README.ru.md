@@ -1,5 +1,11 @@
 > 🌐 English version: [README.md](README.md)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Python-Fork/FlowTrace/main/logo.png" width="400" alt="FlowTrace logo">
+</p>
 # 🌀 FlowTrace — трассировка исполнения для Python 3.12+
+
+[![PyPI version](https://img.shields.io/pypi/v/flowtrace.svg)](https://pypi.org/project/flowtrace/)
+[![Python](https://img.shields.io/badge/python-3.12|3.13|3.14-blue.svg)](#)
 
 > FlowTrace — это системный трейссер, построенный на Monitoring API Python (PEP 669).
 Он не измеряет время выполнения “по умолчанию” — вместо этого восстанавливает,
@@ -40,7 +46,7 @@ fib(3)
 ```python
 from flowtrace import trace
 
-@trace(measure_time=True)
+@trace(show_timing=True)
 def compute(a, b):
     return a * b
 
@@ -209,3 +215,15 @@ collect_timing: bool
 ## Участие
 
 PR приветствуются. Кодовая база специально компактна — это учебный и исследовательский инструмент, позволяющий изучать внутреннее устройство Python 3.12+ и его Monitoring API.
+
+## Разработка
+
+```bash
+python -m pip install -U pip
+pip install -e .  # editable install
+pip install -U ruff mypy pytest pre-commit
+pre-commit install
+pytest -q
+ruff format .
+ruff check .
+mypy flowtrace

@@ -2,7 +2,10 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/Python-Fork/FlowTrace/main/logo.png" width="400" alt="FlowTrace logo">
 </p>
+
 # 🌀 FlowTrace — Visual Execution Tracing for Python 3.12+
+[![PyPI version](https://img.shields.io/pypi/v/flowtrace.svg)](https://pypi.org/project/flowtrace/)
+[![Python](https://img.shields.io/badge/python-3.12|3.13|3.14-blue.svg)](#)
 
 >FlowTrace is a system-level tracer built on Python’s Monitoring API (PEP 669).
 >It doesn’t “profile time by default”. Instead, it reconstructs what happened in your program — calls, returns,
@@ -44,7 +47,7 @@ Output:
 ```python
 from flowtrace import trace
 
-@trace(measure_time=True)
+@trace(show_timing=True)
 def compute(a, b):
     return a * b
 
@@ -205,3 +208,15 @@ Starting/stopping a session alone does not add timing overhead.
 ## Contributing
 
 We welcome small, surgical PRs. The codebase is intentionally compact to be an approachable learning tool for exploring Python 3.12+ internals.
+
+## Development
+
+```bash
+python -m pip install -U pip
+pip install -e .  # editable install
+pip install -U ruff mypy pytest pre-commit
+pre-commit install
+pytest -q
+ruff format .
+ruff check .
+mypy flowtrace

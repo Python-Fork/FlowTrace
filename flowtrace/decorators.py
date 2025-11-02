@@ -1,24 +1,51 @@
-from __future__ import annotations
-
 import inspect
 import sys
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Any, TypeVar, cast
+from typing import Any, TypeVar, cast, overload
 
 from .config import get_config
-from .core import start_tracing, stop_tracing, get_trace_data, is_tracing_active
+from .core import get_trace_data, is_tracing_active, start_tracing, stop_tracing
 from .formatters import print_tree
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def trace(func: F | None = None, *, show_args: bool | None = None, show_result: bool | None = None,
-          show_timing: bool | None = None, show_exc: bool | int | None = None, exc_tb_depth: int = 2) -> F:
+@overload
+def trace(
+    func: F,
+    *,
+    show_args: bool | None = None,
+    show_result: bool | None = None,
+    show_timing: bool | None = None,
+    show_exc: bool | int | None = None,
+    exc_tb_depth: int = 2,
+) -> F: ...
+@overload
+def trace(
+    func: None = None,
+    *,
+    show_args: bool | None = None,
+    show_result: bool | None = None,
+    show_timing: bool | None = None,
+    show_exc: bool | int | None = None,
+    exc_tb_depth: int = 2,
+) -> Callable[[F], F]: ...
+
+
+def trace(
+    func: F | None = None,
+    *,
+    show_args: bool | None = None,
+    show_result: bool | None = None,
+    show_timing: bool | None = None,
+    show_exc: bool | int | None = None,
+    exc_tb_depth: int = 2,
+) -> F | Callable[[F], F]:
     def decorator(real_func: F) -> F:
         sig = inspect.signature(real_func)
 
         def _format_named_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-            # Считаем аргументы ТОЛЬКО если это действительно нужно
             try:
                 bound = sig.bind_partial(*args, **kwargs)
                 bound.apply_defaults()
@@ -69,6 +96,8 @@ def trace(func: F | None = None, *, show_args: bool | None = None, show_result: 
                 if fresh:
                     stop_tracing()
                     print_tree(get_trace_data())
-        return cast(F, wrapper)
 
-    return decorator(func) if func is not None else cast(F, decorator)
+        return cast("F", wrapper)
+
+    # если декоратор вызван без скобок
+    return decorator(func) if func is not None else decorator

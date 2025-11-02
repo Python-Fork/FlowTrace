@@ -6,8 +6,10 @@ _CONFIG = {
     "exc_tb_depth": 2,
 }
 
+
 def get_config() -> dict:
     return _CONFIG
+
 
 def config(**kwargs):
     _CONFIG.update(kwargs)

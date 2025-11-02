@@ -5,12 +5,14 @@ FlowTrace regression test:
  - проверка глубины traceback (depth)
 """
 
+from contextlib import suppress
+
 from flowtrace import trace
 from flowtrace.core import start_tracing, stop_tracing
 from flowtrace.formatters import print_tree
 
-
 # --- вспомогательные функции ----------------------------------------
+
 
 @trace  # без show_exc=True
 def fail_default():
@@ -39,26 +41,24 @@ def fail_depth3():
 def deeper_2():
     def nested():
         raise KeyError("deep chain")
+
     nested()
 
 
 # --- тесты ----------------------------------------------------------
+
 
 def run_all():
     print("=== FlowTrace test: basic return vs exception (default mode) ===")
     start_tracing()
 
     # 1. нормальное завершение
-    try:
+    with suppress(Exception):
         _ = sum([1, 2, 3])
-    except Exception:
-        pass
 
     # 2. исключение без show_exc=True
-    try:
+    with suppress(ValueError):
         fail_default()
-    except ValueError:
-        pass
 
     events = stop_tracing()
 
@@ -78,10 +78,8 @@ def run_all():
 def run_show_exc():
     print("=== FlowTrace test: show_exc=True ===")
     start_tracing()
-    try:
+    with suppress(Exception):
         fail_once()
-    except Exception:
-        pass
     events = stop_tracing()
 
     excs = [e for e in events if e.kind == "exception"]
@@ -98,20 +96,16 @@ def run_depth_tests():
 
     # --- глубина 1 ---
     start_tracing()
-    try:
+    with suppress(Exception):
         fail_depth1()
-    except Exception:
-        pass
     events1 = stop_tracing()
     tb1 = next((e.exc_tb for e in events1 if e.exc_tb), "")
     depth1_count = tb1.count("|") + 1 if tb1 else 0
 
     # --- глубина 3 ---
     start_tracing()
-    try:
+    with suppress(Exception):
         fail_depth3()
-    except Exception:
-        pass
     events3 = stop_tracing()
     tb3 = next((e.exc_tb for e in events3 if e.exc_tb), "")
     depth3_count = tb3.count("|") + 1 if tb3 else 0

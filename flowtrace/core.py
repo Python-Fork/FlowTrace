@@ -4,14 +4,17 @@ import logging
 import sys
 import traceback
 import weakref
-
-from dataclasses import dataclass
-from time import perf_counter
-from typing import Any, List, Optional
-from pathlib import Path
 from collections import defaultdict
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
+from typing import Any
 
 from flowtrace.config import get_config
+
+Cb = Callable[..., None]
 
 
 @dataclass
@@ -19,19 +22,19 @@ class CallEvent:
     id: int
     kind: str
     func_name: str
-    parent_id: Optional[int] = None
+    parent_id: int | None = None
 
     # payload (заполняются строго по флагам)
-    args_repr: Optional[str] = None
-    result_repr: Optional[str] = None
-    duration: Optional[float] = None
+    args_repr: str | None = None
+    result_repr: str | None = None
+    duration: float | None = None
 
     # для exception
-    exc_type: Optional[str] = None
-    exc_msg: Optional[str] = None
-    caught: Optional[bool] = None   # None = "открытое", True = "поймано", False = "ушло наружу"
+    exc_type: str | None = None
+    exc_msg: str | None = None
+    caught: bool | None = None  # None = "открытое", True = "поймано", False = "ушло наружу"
     via_exception: bool = False
-    exc_tb: Optional[str] = None    # компактный срез traceback (если собирали)
+    exc_tb: str | None = None  # компактный срез traceback (если собирали)
 
     # флаги того, что ДОЛЖНО было собираться для этого вызова
     collect_args: bool = False
@@ -61,18 +64,22 @@ class TraceSession:
 
         # очередь метаданных от декоратора для КОНКРЕТНОГО следующего вызова функции
         # func_name -> list of (args_repr, collect_args, collect_result, collect_timing, collect_exc_tb, exc_tb_depth)
-        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool, bool, int]]] = defaultdict(list)
+        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool, bool, int]]] = (
+            defaultdict(list)
+        )
 
-        self._cb_start: Optional[callable] = None
-        self._cb_return: Optional[callable] = None
+        self._cb_start: Cb | None = None
+        self._cb_return: Cb | None = None
 
-        self._cb_raise: Optional[callable] = None
-        self._cb_reraise: Optional[callable] = None
-        self._cb_unwind: Optional[callable] = None
-        self._cb_exc_handled: Optional[callable] = None
-        self._cb_c_raise: Optional[callable] = None
+        self._cb_raise: Cb | None = None
+        self._cb_reraise: Cb | None = None
+        self._cb_unwind: Cb | None = None
+        self._cb_exc_handled: Cb | None = None
+        self._cb_c_raise: Cb | None = None
 
-        self.open_exc_events: dict[int, list[int]] = defaultdict(list)  # "открытые" исключения на фрейм
+        self.open_exc_events: dict[int, list[int]] = defaultdict(
+            list
+        )  # "открытые" исключения на фрейм
         self.current_exc_by_call: dict[int, int] = {}  # call_event_id -> event_id исключения
         self._exc_prefs_by_call: dict[int, tuple[bool, int]] = {}
 
@@ -96,17 +103,19 @@ class TraceSession:
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.RAISE, self._cb_raise)
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.RERAISE, self._cb_reraise)
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_UNWIND, self._cb_unwind)
-        sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.EXCEPTION_HANDLED, self._cb_exc_handled)
+        sys.monitoring.register_callback(
+            TOOL_ID, sys.monitoring.events.EXCEPTION_HANDLED, self._cb_exc_handled
+        )
         # sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.C_RAISE, self._cb_c_raise)
 
         sys.monitoring.set_events(
             TOOL_ID,
-            sys.monitoring.events.PY_START |
-            sys.monitoring.events.PY_RETURN |
-            sys.monitoring.events.RAISE |
-            sys.monitoring.events.RERAISE |
-            sys.monitoring.events.PY_UNWIND |
-            sys.monitoring.events.EXCEPTION_HANDLED
+            sys.monitoring.events.PY_START
+            | sys.monitoring.events.PY_RETURN
+            | sys.monitoring.events.RAISE
+            | sys.monitoring.events.RERAISE
+            | sys.monitoring.events.PY_UNWIND
+            | sys.monitoring.events.EXCEPTION_HANDLED,
         )
 
     def stop(self) -> list[CallEvent]:
@@ -120,17 +129,13 @@ class TraceSession:
             sys.monitoring.set_events(TOOL_ID, sys.monitoring.events.NO_EVENTS)
 
         if getattr(self, "_cb_start", None):
-            sys.monitoring.register_callback(
-                TOOL_ID, sys.monitoring.events.PY_START, None
-            )
+            sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_START, None)
             self._cb_start = None
 
         if getattr(self, "_cb_return", None):
-            sys.monitoring.register_callback(
-                TOOL_ID, sys.monitoring.events.PY_RETURN, None
-            )
+            sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_RETURN, None)
             self._cb_return = None
-            
+
         for ev, attr in [
             (sys.monitoring.events.RAISE, "_cb_raise"),
             (sys.monitoring.events.RERAISE, "_cb_reraise"),
@@ -160,7 +165,14 @@ class TraceSession:
 
         q = self.pending_meta.get(func_name)
         if q:
-            args_repr, collect_args, collect_result, collect_timing, collect_exc_tb, exc_tb_depth = q.pop(0)
+            (
+                args_repr,
+                collect_args,
+                collect_result,
+                collect_timing,
+                collect_exc_tb,
+                exc_tb_depth,
+            ) = q.pop(0)
             if not q:
                 self.pending_meta.pop(func_name, None)
 
@@ -203,17 +215,20 @@ class TraceSession:
 
         del self.stack[frame_index:]
 
-        end = perf_counter() if collect_timing else None
-        duration = (end - start) if (start and collect_timing) else None
+        end: float = perf_counter() if collect_timing else 0.0
+        if collect_timing and start is not None:
+            duration = end - start
+        else:
+            duration = None
 
         result_repr: str | None = None
         if collect_result:
-            try:
+            with suppress(Exception):
                 r = repr(result)
                 if len(r) > 60:
                     r = r[:57] + "..."
                 result_repr = r
-            except Exception:
+            if "result_repr" not in locals():
                 result_repr = "<unrepr>"
 
         self.events.append(
@@ -227,7 +242,7 @@ class TraceSession:
             )
         )
 
-    def get_current_call_id(self, func_name: str) -> Optional[int]:
+    def get_current_call_id(self, func_name: str) -> int | None:
         """Публичная обёртка над _current_call_event_id (для внешнего использования внутри ядра)."""
         return self._current_call_event_id(func_name)
 
@@ -241,27 +256,26 @@ class TraceSession:
             (self.default_collect_exc_tb, self.default_exc_tb_depth),
         )
 
-    def _find_frame_index(self, func_name: str) -> Optional[int]:
-        for i in range(len(self.stack) - 1, -1, -1):
-            name, _, _ = self.stack[i]
+    def _find_frame_index(self, func_name: str) -> int | None:
+        for i, (name, _, _) in enumerate(reversed(self.stack), start=1):
             if name == func_name:
-                return i
+                return len(self.stack) - i
         return None
 
-    def _current_call_event_id(self, func_name: str) -> Optional[int]:
+    def _current_call_event_id(self, func_name: str) -> int | None:
         idx = self._find_frame_index(func_name)
         if idx is None:
             return None
         return self.stack[idx][2]
 
     def _append_exception(
-            self,
-            call_event_id: Optional[int],
-            func_name: str,
-            exc_type: str,
-            exc_msg: str,
-            caught: Optional[bool],
-            exc_tb: Optional[str] = None,
+        self,
+        call_event_id: int | None,
+        func_name: str,
+        exc_type: str,
+        exc_msg: str,
+        caught: bool | None,
+        exc_tb: str | None = None,
     ) -> int:
         ev = CallEvent(
             id=len(self.events),
@@ -271,7 +285,7 @@ class TraceSession:
             exc_type=exc_type,
             exc_msg=exc_msg,
             exc_tb=exc_tb,
-            caught=caught
+            caught=caught,
         )
         self.events.append(ev)
         if call_event_id is not None:
@@ -319,34 +333,36 @@ class TraceSession:
             return
         idx = self._find_frame_index(func_name)
         if idx is not None:
-            name, start, call_id = self.stack[idx]
+            _, start, call_id = self.stack[idx]
             duration = None
             if start:
-                duration = perf_counter() - start
+                duration = perf_counter() - start if start > 0.0 else None
 
-            self.events.append(CallEvent(
-                id=len(self.events),
-                kind="return",
-                func_name=func_name,
-                parent_id=call_id,
-                result_repr=None,
-                duration=duration,
-                via_exception=True,
-            ))
+            self.events.append(
+                CallEvent(
+                    id=len(self.events),
+                    kind="return",
+                    func_name=func_name,
+                    parent_id=call_id,
+                    result_repr=None,
+                    duration=duration,
+                    via_exception=True,
+                )
+            )
 
-        call_id = self._current_call_event_id(func_name)
-        if call_id is not None:
-            ev_id = self.current_exc_by_call.get(call_id)
+        current_call_id: int | None = self._current_call_event_id(func_name)
+        if current_call_id is not None:
+            ev_id = self.current_exc_by_call.get(current_call_id)
             if ev_id is not None:
                 # уже есть активная — просто idempotent обновление
                 if self.events[ev_id].caught is not False:
                     self.events[ev_id].caught = False
             else:
                 # вообще не было записи → создадим одну «propagated»
-                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+                self._append_exception(current_call_id, func_name, exc_type, exc_msg, caught=False)
             # фрейм завершился исключением — чистим маркеры
-            self.current_exc_by_call.pop(call_id, None)
-            self.open_exc_events.pop(call_id, None)
+            self.current_exc_by_call.pop(current_call_id, None)
+            self.open_exc_events.pop(current_call_id, None)
 
         # снимаем фрейм
         if idx is not None:
@@ -366,7 +382,6 @@ class TraceSession:
         else:
             self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
 
-
     def push_meta_for_func(
         self,
         func_name: str,
@@ -381,9 +396,14 @@ class TraceSession:
         """Кладём готовые метаданные ДЛЯ СЛЕДУЮЩЕГО вызова данной функции."""
         if not self.active:
             return
-        self.pending_meta[func_name].append(
-            (args_repr, collect_args, collect_result, collect_timing, collect_exc_tb, exc_tb_depth)
-        )
+        self.pending_meta[func_name].append((
+            args_repr,
+            collect_args,
+            collect_result,
+            collect_timing,
+            collect_exc_tb,
+            exc_tb_depth,
+        ))
 
 
 def _reserve_tool_id(name: str = "flowtrace") -> int:
@@ -399,22 +419,23 @@ def _reserve_tool_id(name: str = "flowtrace") -> int:
         "Close any active debuggers or profilers and try again"
     )
 
+
 def _norm(p: Path) -> str:
     # нормализуем и нижний регистр для кросплатформенности
     return str(p).replace("\\", "/").lower()
 
+
 # --- globals & prefixes ------------------------------------------------------
-_last_data: Optional[list[CallEvent]] = None
+_last_data: list[CallEvent] | None = None
 TOOL_ID = _reserve_tool_id()
 
 # системные и собственные пути (для фильтрации traceback)
 _HERE_STR = _norm(Path(__file__).resolve().parent)
-_STD_PREFIXES_STR = tuple(
-    _norm(p) for p in {Path(sys.prefix), Path(sys.base_prefix)} if p.exists()
-)
+_STD_PREFIXES_STR = tuple(_norm(p) for p in {Path(sys.prefix), Path(sys.base_prefix)} if p.exists())
 
 # слабый кэш для фильтрации кода (ускоряет _is_user_code)
 _IS_USER_CODE_CACHE: weakref.WeakKeyDictionary[Any, bool] = weakref.WeakKeyDictionary()
+
 
 def _is_user_code(code) -> bool:
     """Определяет, относится ли код к пользовательскому (а не stdlib/venv/самой FlowTrace)."""
@@ -446,6 +467,7 @@ def _is_user_code(code) -> bool:
 
     _IS_USER_CODE_CACHE[code] = True
     return True
+
 
 def _is_user_path(path: str) -> bool:
     """То же самое, но для обычного пути (строки)."""
@@ -493,7 +515,9 @@ def _on_event(label: str, code, raw_args):
                     frames = raw_frames
 
                 frames = frames[-depth:]
-                tb_text = " | ".join(f"{Path(fr.filename).name}:{fr.lineno} in {fr.name}" for fr in frames)
+                tb_text = " | ".join(
+                    f"{Path(fr.filename).name}:{fr.lineno} in {fr.name}" for fr in frames
+                )
 
         exc_type = type(exc).__name__ if exc is not None else "<unknown>"
         exc_msg = str(exc) if exc is not None else ""
@@ -517,16 +541,15 @@ def _on_event(label: str, code, raw_args):
         exc_msg = str(exc) if exc is not None else ""
         sess.on_unwind(func, exc_type, exc_msg)
 
+
 def _make_handler(event_label: str):
     def handler(*args):
         if not args:
             return
         code = args[0]
-        try:
+        with suppress(Exception):
             if not _is_user_code(code):
                 return
-        except Exception:
-            pass
         try:
             _on_event(event_label, code, args)
         except Exception as e:
@@ -534,22 +557,28 @@ def _make_handler(event_label: str):
 
     return handler
 
+
 def start_tracing(
     default_show_args: bool | None = None,
     default_show_result: bool | None = None,
     default_show_timing: bool | None = None,
+    default_show_exc: bool | None = None,
 ) -> None:
     cfg = get_config()
 
     sess = TraceSession(
         default_collect_args=cfg["show_args"] if default_show_args is None else default_show_args,
-        default_collect_result=cfg["show_result"] if default_show_result is None else default_show_result,
-        default_collect_timing=cfg["show_timing"] if default_show_timing is None else default_show_timing,
-        default_collect_exc_tb=cfg.get("show_exc", False),
+        default_collect_result=cfg["show_result"]
+        if default_show_result is None
+        else default_show_result,
+        default_collect_timing=cfg["show_timing"]
+        if default_show_timing is None
+        else default_show_timing,
+        default_collect_exc_tb=cfg["show_exc"] if default_show_exc is None else default_show_exc,
         default_exc_tb_depth=cfg.get("exc_tb_depth", 2),
     )
     sess.start()
-    setattr(sys.monitoring, "_flowtrace_session", sess)
+    sys.monitoring._flowtrace_session = sess  # type: ignore[attr-defined]
 
 
 def is_tracing_active() -> bool:
@@ -557,8 +586,8 @@ def is_tracing_active() -> bool:
     return bool(sess and sess.active)
 
 
-def stop_tracing() -> List[CallEvent]:
-    global  _last_data
+def stop_tracing() -> list[CallEvent]:
+    global _last_data
     sess = getattr(sys.monitoring, "_flowtrace_session", None)
     if not sess:
         return []
@@ -567,9 +596,9 @@ def stop_tracing() -> List[CallEvent]:
         sys.monitoring.set_events(TOOL_ID, sys.monitoring.events.NO_EVENTS)
     data = sess.stop()
     _last_data = data
-    setattr(sys.monitoring, "_flowtrace_session", None)
+    sys.monitoring._flowtrace_session = None  # type: ignore[attr-defined]
     return data
 
 
-def get_trace_data() -> List[CallEvent]:
+def get_trace_data() -> list[CallEvent]:
     return list(_last_data) if _last_data else []

@@ -44,7 +44,7 @@ select = [
 ignore = [
   "E501",
 ]
-extend-ignore = ["RUF002", "RUF003", 'SIM108']
+extend-ignore = ["RUF002", "RUF003", 'SIM108', "UP047"]
 
 explicit-preview-rules = true
 

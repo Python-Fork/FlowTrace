@@ -6,7 +6,8 @@ import traceback
 import weakref
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -15,6 +16,9 @@ from typing import Any
 from flowtrace.config import get_config
 
 Cb = Callable[..., None]
+
+# Текущая активная сессия FlowTrace (асинхронно-изолированная)
+_CURRENT_SESSION: ContextVar[TraceSession | None] = ContextVar("flowtrace_session", default=None)
 
 
 @dataclass
@@ -484,7 +488,7 @@ def _is_user_path(path: str) -> bool:
 
 
 def _on_event(label: str, code, raw_args):
-    sess = getattr(sys.monitoring, "_flowtrace_session", None)
+    sess = _CURRENT_SESSION.get()
     if not (sess and sess.active):
         return
 
@@ -579,17 +583,17 @@ def start_tracing(
         default_exc_tb_depth=cfg.exc_depth(),
     )
     sess.start()
-    sys.monitoring._flowtrace_session = sess  # type: ignore[attr-defined]
+    _CURRENT_SESSION.set(sess)
 
 
 def is_tracing_active() -> bool:
-    sess = getattr(sys.monitoring, "_flowtrace_session", None)
+    sess = _CURRENT_SESSION.get()
     return bool(sess and sess.active)
 
 
 def stop_tracing() -> list[CallEvent]:
     global _last_data
-    sess = getattr(sys.monitoring, "_flowtrace_session", None)
+    sess = _CURRENT_SESSION.get()
     if not sess:
         return []
     current = sys.monitoring.get_events(TOOL_ID)
@@ -603,3 +607,13 @@ def stop_tracing() -> list[CallEvent]:
 
 def get_trace_data() -> list[CallEvent]:
     return list(_last_data) if _last_data else []
+
+
+@contextmanager
+def active_tracing(**kwargs):
+    """Контекстный менеджер для безопасной трассировки."""
+    start_tracing(**kwargs)
+    try:
+        yield
+    finally:
+        stop_tracing()

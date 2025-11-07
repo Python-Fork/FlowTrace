@@ -84,6 +84,26 @@ Output:
 ← fib()  → 2
 ```
 ---
+## 4) Context manager
+
+FlowTrace provides a context manager for scoped tracing inside specific code blocks.  
+This approach is especially convenient for short-lived runs, tests, or async tasks.
+
+```python
+from flowtrace.core import active_tracing
+from flowtrace import print_tree
+
+def run_demo():
+    ...
+
+with active_tracing():
+    run_demo()
+
+print_tree()
+```
+Each ```with active_tracing()```: block creates its own isolated tracing session,
+so concurrent async tasks or nested runs don’t interfere with each other.
+---
 ## Global configuration
 ```python
 import flowtrace

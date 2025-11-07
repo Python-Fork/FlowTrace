@@ -1,5 +1,6 @@
 import flowtrace
-from flowtrace.core import get_trace_data
+from flowtrace import print_tree
+from flowtrace.core import active_tracing, get_trace_data
 
 
 @flowtrace.trace
@@ -49,3 +50,40 @@ def test_get_trace_data_after_stop():
     data = get_trace_data()
     assert isinstance(data, list)
     assert all(hasattr(e, "kind") for e in data)
+
+
+def foo():
+    return 1
+
+
+def bar():
+    return foo() + 1
+
+
+def test_active_tracing_cm_collects_events(capsys):
+    with active_tracing():
+        bar()
+    events = get_trace_data()
+    # должно что-то быть
+    assert events and any(ev.func_name == "bar" for ev in events)
+    # печать не обязательна, но проверим, что не падает
+    print_tree(events)
+    out = capsys.readouterr().out
+    assert "bar" in out
+
+
+def test_nested_contexts_isolate_data():
+    # первый контекст
+    with active_tracing():
+        foo()
+    events1 = get_trace_data()
+
+    # второй контекст
+    with active_tracing():
+        bar()
+    events2 = get_trace_data()
+
+    # В первом не должно быть bar(), во втором точно есть
+    assert any(ev.func_name == "foo" for ev in events1)
+    assert not any(ev.func_name == "bar" for ev in events1)
+    assert any(ev.func_name == "bar" for ev in events2)

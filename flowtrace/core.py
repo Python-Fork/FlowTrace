@@ -577,10 +577,8 @@ def start_tracing(
         default_collect_timing=cfg.show_timing
         if default_show_timing is None
         else default_show_timing,
-        default_collect_exc_tb=cfg.exc_enabled()
-        if default_show_exc is None
-        else bool(default_show_exc),
-        default_exc_tb_depth=cfg.exc_depth(),
+        default_collect_exc_tb=True,
+        default_exc_tb_depth=cfg.exc_depth() or 2,
     )
     sess.start()
     _CURRENT_SESSION.set(sess)

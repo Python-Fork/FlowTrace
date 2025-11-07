@@ -87,15 +87,25 @@ print_tree(events)
 ## Глобальные настройки
 ```python
 import flowtrace
-flowtrace.config(show_args=False, show_result=True, show_timing=True)
+import flowtrace
+flowtrace.config(
+    show_args=True,
+    show_result=True,
+    show_timing=True,
+    show_exc=False,
+    inline_return=False,
+)
 ```
 Управляют тем, какие данные собирать по умолчанию.
 
-| Флаг          | Назначение                                  |
-| ------------- | ------------------------------------------- |
-| `show_args`   | собирать и отображать аргументы функций     |
-| `show_result` | собирать и отображать возвращаемые значения |
-| `show_timing` | измерять и отображать время выполнения      |
+| Флаг            | Тип        | Назначение                                                     |
+| --------------- |------------| -------------------------------------------------------------- |
+| `show_args`     | bool       | собирать и отображать аргументы функций                        |
+| `show_result`   | bool       | собирать и отображать возвращаемые значения                    |
+| `show_timing`   | bool       | измерять и отображать время выполнения                         |
+| `show_exc`      | bool / int | включить трассировку исключений; число задаёт глубину traceback|
+| `inline_return` | bool       | однострочный вывод для простых вызовов                         |
+
 
 ## Локальные переопределения
 ```python
@@ -157,6 +167,8 @@ from flowtrace import trace, config, start_tracing, stop_tracing, get_trace_data
 
 - ```print_tree(events)```
 Печатает иерархическое дерево вызовов.
+
+- `get_config() -> Config` — получить текущий типизированный объект настроек.
 
 Модель события (```CallEvent```)
 ``` python

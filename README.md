@@ -87,16 +87,26 @@ Output:
 ## Global configuration
 ```python
 import flowtrace
-flowtrace.config(show_args=False, show_result=True, show_timing=True)
+import flowtrace
+flowtrace.config(
+    show_args=True,
+    show_result=True,
+    show_timing=True,
+    show_exc=False,
+    inline_return=False,
+)
 ```
 Controls which information is collected globally.
 All flags default to True.
 
-| Flag          | Description                           |
-| ------------- | ------------------------------------- |
-| `show_args`   | capture and display call arguments    |
-| `show_result` | capture and display return values     |
-| `show_timing` | measure and display function duration |
+| Flag            | Type       | Description                                             |
+| --------------- |------------| ------------------------------------------------------- |
+| `show_args`     | bool       | capture and display call arguments                      |
+| `show_result`   | bool       | capture and display return values                       |
+| `show_timing`   | bool       | measure and display function duration                   |
+| `show_exc`      | bool / int | enable exception trace capture; int sets traceback depth|
+| `inline_return` | bool       | compact one-line output for leaf calls                  |
+
 
 ## Function-level overrides
 ```python
@@ -156,6 +166,7 @@ Access the last recorded events.
 
 - ```print_tree(events)```
 Pretty-print a hierarchical call tree.
+- `get_config() -> Config` — access the current typed configuration object.
     
 ### Event model (```CallEvent```):
 ``` python

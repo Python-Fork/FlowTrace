@@ -565,17 +565,18 @@ def start_tracing(
     default_show_exc: bool | None = None,
 ) -> None:
     cfg = get_config()
-
     sess = TraceSession(
-        default_collect_args=cfg["show_args"] if default_show_args is None else default_show_args,
-        default_collect_result=cfg["show_result"]
+        default_collect_args=cfg.show_args if default_show_args is None else default_show_args,
+        default_collect_result=cfg.show_result
         if default_show_result is None
         else default_show_result,
-        default_collect_timing=cfg["show_timing"]
+        default_collect_timing=cfg.show_timing
         if default_show_timing is None
         else default_show_timing,
-        default_collect_exc_tb=cfg["show_exc"] if default_show_exc is None else default_show_exc,
-        default_exc_tb_depth=cfg.get("exc_tb_depth", 2),
+        default_collect_exc_tb=cfg.exc_enabled()
+        if default_show_exc is None
+        else bool(default_show_exc),
+        default_exc_tb_depth=cfg.exc_depth(),
     )
     sess.start()
     sys.monitoring._flowtrace_session = sess  # type: ignore[attr-defined]

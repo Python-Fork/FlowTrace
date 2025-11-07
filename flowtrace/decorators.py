@@ -12,15 +12,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 @overload
-def trace(
-    func: F,
-    *,
-    show_args: bool | None = None,
-    show_result: bool | None = None,
-    show_timing: bool | None = None,
-    show_exc: bool | int | None = None,
-    exc_tb_depth: int = 2,
-) -> F: ...
+def trace(func: F) -> F: ...
 @overload
 def trace(
     func: None = None,
@@ -29,7 +21,7 @@ def trace(
     show_result: bool | None = None,
     show_timing: bool | None = None,
     show_exc: bool | int | None = None,
-    exc_tb_depth: int = 2,
+    exc_tb_depth: int | None = None,
 ) -> Callable[[F], F]: ...
 
 
@@ -40,7 +32,7 @@ def trace(
     show_result: bool | None = None,
     show_timing: bool | None = None,
     show_exc: bool | int | None = None,
-    exc_tb_depth: int = 2,
+    exc_tb_depth: int | None = None,
 ) -> F | Callable[[F], F]:
     def decorator(real_func: F) -> F:
         sig = inspect.signature(real_func)
@@ -66,14 +58,22 @@ def trace(
                 start_tracing()
 
             cfg = get_config()
-            collect_args = show_args if show_args is not None else cfg["show_args"]
-            collect_result = show_result if show_result is not None else cfg["show_result"]
-            collect_timing = show_timing if show_timing is not None else cfg["show_timing"]
-            collect_exc = bool(show_exc) if show_exc is not None else cfg["show_exc"]
-            if isinstance(show_exc, bool) or show_exc is None:
-                depth = exc_tb_depth
+            collect_args = show_args if show_args is not None else cfg.show_args
+            collect_result = show_result if show_result is not None else cfg.show_result
+            collect_timing = show_timing if show_timing is not None else cfg.show_timing
+
+            if isinstance(show_exc, int):
+                collect_exc = True
+                depth = show_exc
+            elif isinstance(show_exc, bool):
+                collect_exc = show_exc
+                depth = cfg.exc_depth()
+            elif exc_tb_depth is not None:
+                collect_exc = True
+                depth = int(exc_tb_depth)
             else:
-                depth = int(show_exc)
+                collect_exc = cfg.exc_enabled()
+                depth = cfg.exc_depth()
 
             args_repr = _format_named_args(args, kwargs) if collect_args else None
 

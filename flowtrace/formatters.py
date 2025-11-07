@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .config import get_config
 from .core import CallEvent, get_trace_data
 
 _MAX_MSG = 200
@@ -67,7 +68,10 @@ def print_summary(events: list[CallEvent] | None = None) -> None:
 
 
 def print_tree(
-    events: list[CallEvent] | None = None, indent: int = 0, parent_id: int | None = None
+    events: list[CallEvent] | None = None,
+    indent: int = 0,
+    parent_id: int | None = None,
+    inline_return: bool | None = None,
 ) -> None:
     if events is None:
         events = get_trace_data()
@@ -75,22 +79,39 @@ def print_tree(
         print("[flowtrace] (пустая трасса)")
         return
 
+    cfg = get_config()
+    inline = cfg.inline_return if inline_return is None else inline_return
     indent_str = "  " * indent
 
-    # все "call" данного уровня
     calls = [e for e in events if e.kind == "call" and e.parent_id == parent_id]
 
     for call in calls:
-        # заголовок узла
+        # Дети и связанные события
+        children = [e for e in events if e.kind == "call" and e.parent_id == call.id]
+        excs = [e for e in events if e.kind == "exception" and e.parent_id == call.id]
+        ret = next((r for r in events if r.kind == "return" and r.parent_id == call.id), None)
+
+        # Условия «листового» однострочного вывода:
+        # - нет дочерних вызовов
+        # - нет исключений
+        # - есть нормальный return (не via_exception)
+        is_leaf_normal = inline and not children and not excs and ret and not ret.via_exception
+
+        if is_leaf_normal:
+            line = f"{indent_str}→ {_sig(call.func_name, call.args_repr)}"
+            if ret and ret.duration is not None:
+                line += f" [{ret.duration:.6f}s]"
+            if ret and ret.result_repr is not None:
+                line += f" → {ret.result_repr}"
+            print(line)
+            continue  # однострочный узел уже выведен
+
+        # Многострочный стиль (как раньше)
         print(f"{indent_str}→ {_sig(call.func_name, call.args_repr)}")
 
-        # внутренние вызовы
-        children = [e for e in events if e.kind == "call" and e.parent_id == call.id]
         if children:
-            print_tree(events, indent + 1, call.id)
+            print_tree(events, indent + 1, call.id, inline_return=inline)
 
-        # исключения, привязанные к этому вызову
-        excs = [e for e in events if e.kind == "exception" and e.parent_id == call.id]
         if excs:
             exc_indent = "  " * (indent + 1)
             for ex in excs:
@@ -106,21 +127,13 @@ def print_tree(
                 if ex.exc_tb:
                     print(f"{exc_indent}   ⤷ {ex.exc_tb}")
 
-        # завершение кадра: обычный return или "exception-return"
-        ret = next((r for r in events if r.kind == "return" and r.parent_id == call.id), None)
-
         end_arrow = "↯" if (ret and ret.via_exception) else "←"
         end_line = f"{indent_str}{end_arrow} {_sig(call.func_name, call.args_repr)}"
 
-        # время всегда можно показывать (кадр прожил), если оно было собрано
         if ret and ret.duration is not None:
             end_line += f" [{ret.duration:.6f}s]"
-
-        # результат только для нормального возврата
         if ret and not ret.via_exception and ret.result_repr is not None:
             end_line += f" → {ret.result_repr}"
-
-        # для наглядности можно пометить «exception-return»
         if ret and ret.via_exception:
             end_line += " [exc-return]"
 

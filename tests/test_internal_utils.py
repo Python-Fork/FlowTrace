@@ -1,7 +1,7 @@
 import sys
 
 import flowtrace
-from flowtrace.core import _is_user_code, _is_user_path
+from flowtrace.monitoring import _is_user_code, _is_user_path
 
 
 def test_is_user_code_and_path_filters_work():

@@ -80,7 +80,7 @@ def trace(
             sess = getattr(sys.monitoring, "_flowtrace_session", None)
             if sess and getattr(sess, "active", False):
                 sess.push_meta_for_func(
-                    real_func.__name__,
+                    wrapper.__code__.co_name,  # type: ignore[attr-defined]
                     args_repr=args_repr,
                     collect_args=collect_args,
                     collect_result=collect_result,
@@ -96,6 +96,8 @@ def trace(
                 if fresh:
                     stop_tracing()
                     print_tree(get_trace_data())
+
+        wrapper.__flowtrace_real_name__ = real_func.__name__  # type: ignore[attr-defined]
 
         return cast("F", wrapper)
 

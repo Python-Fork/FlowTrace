@@ -1,6 +1,6 @@
 [project]
 name = "flowtrace"
-version = "0.4.2"
+version = "0.5.0"
 description = "System-level execution tracer for Python 3.12+ (PEP 669)"
 authors = [{ name = "Alexandr153", email = "boss191105@bk.ru" }]
 readme = "README.md"
@@ -44,7 +44,7 @@ select = [
 ignore = [
   "E501",
 ]
-extend-ignore = ["RUF002", "RUF003", 'SIM108', "UP047"]
+extend-ignore = ["RUF002", "RUF003", 'SIM108', "UP047", "TC001"]
 
 explicit-preview-rules = true
 

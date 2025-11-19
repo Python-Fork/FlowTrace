@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import traceback
 from collections import defaultdict
@@ -144,6 +145,9 @@ class TraceSession:
 
         event_id = len(self.events)
         self.stack.append((func_name, start_time, event_id))
+
+        ctx = self.get_execution_context()
+
         self.events.append(
             CallEvent(
                 id=event_id,
@@ -154,6 +158,7 @@ class TraceSession:
                 collect_args=collect_args,
                 collect_result=collect_result,
                 collect_timing=collect_timing,
+                context=ctx,
             )
         )
         # Чтобы не раздувать CallEvent, запоминаем настройки по call_id
@@ -199,6 +204,8 @@ class TraceSession:
             if "result_repr" not in locals():
                 result_repr = "<unrepr>"
 
+        ctx = self.get_execution_context()
+
         self.events.append(
             CallEvent(
                 id=len(self.events),
@@ -207,6 +214,7 @@ class TraceSession:
                 parent_id=event_id,
                 result_repr=result_repr,
                 duration=duration,
+                context=ctx,
             )
         )
 
@@ -232,7 +240,7 @@ class TraceSession:
                 async_id = None
                 parent_async_id = None
 
-        ctx = getattr(self, "context", None)
+        ctx = self.get_execution_context()
 
         ev = AsyncTransitionEvent(
             id=len(self.events),
@@ -280,17 +288,22 @@ class TraceSession:
         caught: bool | None,
         exc_tb: str | None = None,
     ) -> int:
-        ev = CallEvent(
+        ctx = self.get_execution_context()
+
+        ev = ExceptionEvent(
             id=len(self.events),
-            kind="exception",
             func_name=func_name,
             parent_id=call_event_id,
             exc_type=exc_type,
             exc_msg=exc_msg,
-            exc_tb=exc_tb,
             caught=caught,
+            via_exception=False,  # это просто “исключение произошло”, а не “return через exc”
+            exc_tb=exc_tb,
+            context=ctx,
         )
+
         self.events.append(ev)
+
         if call_event_id is not None:
             # текущая активная запись исключения этого фрейма
             self.current_exc_by_call[call_event_id] = ev.id
@@ -342,6 +355,8 @@ class TraceSession:
             if start:
                 duration = perf_counter() - start if start > 0.0 else None
 
+            ctx = self.get_execution_context()
+
             self.events.append(
                 CallEvent(
                     id=len(self.events),
@@ -351,6 +366,7 @@ class TraceSession:
                     result_repr=None,
                     duration=duration,
                     via_exception=True,
+                    context=ctx,
                 )
             )
 
@@ -411,7 +427,30 @@ class TraceSession:
         ))
 
     def get_execution_context(self) -> ExecutionContext:
-        return self.context
+        """Возвращает свежий ExecutionContext для текущего события."""
+        thread_id = threading.get_ident()
+        task_id = None
+        parent_id = None
+        task_name = None
+
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+
+        if task is not None:
+            task_id = get_async_id(task)
+            if task_id is not None:
+                parent_id = ASYNC_PARENT.get(task_id)
+            with suppress(Exception):
+                task_name = task.get_name()
+
+        ctx = ExecutionContext(
+            thread_id=thread_id, task_id=task_id, task_parent_id=parent_id, task_name=task_name
+        )
+        self.context = ctx
+
+        return ctx
 
     def _handle_raise(self, func_name: str, exc: BaseException | None):
         if not self.active:
@@ -509,6 +548,9 @@ class TraceSession:
             return
         func_name = self._resolve_real_name(code, code.co_name)
 
+        is_async_gen = _is_async_gen_code(code)
+        is_coro = _is_coroutine_code(code)
+
         if label == "PY_START":
             self.on_call(func_name)
 
@@ -538,4 +580,31 @@ class TraceSession:
         elif label == "PY_YIELD":
             value = raw[-1] if raw else None
             detail = self._safe_repr(value)
-            self.on_async_transition("yield", func_name, detail)
+
+            if is_async_gen:
+                # async-генератор отдает значение пользователю
+                kind: Literal["await", "resume", "yield"] = "yield"
+            elif is_coro:
+                # корутина "уходит в await" (yield в event loop)
+                kind = "await"
+            else:
+                # обычный генератор - считаем просто yield
+                kind = "yield"
+
+            self.on_async_transition(kind, func_name, detail)
+
+
+def _is_async_gen_code(code) -> bool:
+    """True, если это async-генератор (async def + yield)."""
+    try:
+        return bool(code.co_flags & inspect.CO_ASYNC_GENERATOR)
+    except Exception:
+        return False
+
+
+def _is_coroutine_code(code) -> bool:
+    """True, если это "чистая" корутина (async def без async-yield)."""
+    try:
+        return bool(code.co_flags & inspect.CO_COROUTINE) and not _is_async_gen_code(code)
+    except Exception:
+        return False

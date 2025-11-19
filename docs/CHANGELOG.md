@@ -120,4 +120,68 @@ Old output formats render identically unless `show_exc=True` is used.
 * Architecture is now ready for advanced async visualization.
 * The internal structure is significantly cleaner, easier to maintain, and still fully backward-compatible with previous public APIs.
 
----``
+---
+
+🇬🇧 *Suggested phrasing:*
+“Let’s add a proper changelog entry for the full 0.5.x minor patch series based on everything we did.”
+
+---
+# **[0.5.1] – 2025-11-19**
+
+### **Added**
+
+* **Unified ExecutionContext across all event types**
+  Every `CallEvent`, `ExceptionEvent`, and `AsyncTransitionEvent` now carries a fully populated execution context:
+
+  * `thread_id` — execution thread
+  * `task_id` — current asyncio.Task identifier
+  * `task_parent_id` — parent task (if any)
+  * `task_name` — human-readable task label
+    This establishes a consistent cross-sync/async foundation for all future visualizers and exporters.
+
+* **ExceptionEvent adopted as the sole exception record type**
+  `_append_exception()` now generates `ExceptionEvent` instances directly, removing the legacy `CallEvent(kind="exception")` mechanism.
+  Propagation, handling, and unwind phases now update `ExceptionEvent.caught` as intended.
+
+* **Async semantics layer (await / resume / yield)**
+  FlowTrace now differentiates async transitions based on CPython’s `co_flags`:
+
+  * `PY_YIELD` inside a coroutine (`CO_COROUTINE`) → synthetic **`await`**
+  * `PY_RESUME` → **`resume`**
+  * `PY_YIELD` inside an async generator (`CO_ASYNC_GENERATOR`) → **`yield`**
+    No custom C hooks, no patching — purely compliant with `sys.monitoring`.
+
+* **Task-aware monitoring**
+  `ExecutionContext` is enriched with `task_id` / `parent_task_id` using the lazy async-ID system from `asyncio_support`.
+  This preserves full compatibility while preparing for async-tree and Chrome Trace export.
+
+* **Async transition events stabilized**
+  `AsyncTransitionEvent` now carries full context, async IDs, parent async IDs, and ready-to-use details for future visualizers.
+
+### **Changed**
+
+* **session.py** re-aligned with new architecture
+  Centralized context generation via `get_execution_context()`.
+  All event creation flows now attach a fresh execution context.
+
+* **Cleaner raw-event dispatch logic**
+  Removed legacy assumptions about phantom `PY_AWAIT`.
+  Pure interpretation of CPython events (`PY_START`, `PY_RETURN`, `PY_UNWIND`, `PY_RESUME`, `PY_YIELD`) governs all async semantics.
+
+* **Exception lifecycle corrected**
+  Raised, handled, and propagated states are now represented strictly via `ExceptionEvent`, aligning with CPython’s monitoring phases.
+
+* **Removed remnants of early async-tree prototypes**
+  No premature visualization logic remains in session or core layers.
+  Only clean, inspected semantics prepared for 0.6 async-tree.
+
+* **Improved clarity and internal consistency**
+  `on_async_transition()` no longer relies on stale `self.context`; it always receives a fresh `ExecutionContext`.
+
+### **Quality**
+
+* Passes full suite: **Pytest, Mypy, Ruff — all green**
+* Codebase ready for the next major feature: **async-tree rendering (0.6)**
+* Internal semantics are now strictly aligned with CPython 3.12–3.14 `sys.monitoring`.
+
+---

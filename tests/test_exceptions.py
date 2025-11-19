@@ -1,7 +1,10 @@
+from contextlib import suppress
+
 import pytest
 
 import flowtrace
-from flowtrace.core import get_trace_data
+from flowtrace import active_tracing, get_trace_data
+from flowtrace.events import ExceptionEvent
 
 
 @flowtrace.trace(show_exc=True)
@@ -20,3 +23,30 @@ def test_trace_exception_and_tb():
     assert exc.exc_type == "ValueError"
     assert exc.exc_tb and "fail_once" in exc.exc_tb
     assert ret.via_exception is True
+
+
+def fail():
+    raise ValueError("boom")
+
+
+def wrapper():
+    with suppress(Exception):
+        fail()
+
+
+def test_exception_event():
+    with active_tracing():
+        wrapper()
+
+    events = get_trace_data()
+
+    exc_events = [e for e in events if isinstance(e, ExceptionEvent)]
+    assert len(exc_events) == 2
+
+    raised = exc_events[0]
+    handled = exc_events[1]
+
+    assert raised.func_name == "fail"
+    assert handled.func_name == "wrapper"
+    assert raised.caught is False
+    assert handled.caught is True

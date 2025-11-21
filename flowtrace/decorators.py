@@ -63,29 +63,31 @@ def trace(
             collect_timing = show_timing if show_timing is not None else cfg.show_timing
 
             if isinstance(show_exc, int):
-                collect_exc = True
-                depth = show_exc
+                depth = max(0, show_exc)
             elif isinstance(show_exc, bool):
-                collect_exc = show_exc
-                depth = cfg.exc_depth()
+                depth = cfg.exc_depth() if show_exc else 0
             elif exc_tb_depth is not None:
-                collect_exc = True
-                depth = int(exc_tb_depth)
+                depth = max(0, int(exc_tb_depth))
             else:
-                collect_exc = cfg.exc_enabled()
                 depth = cfg.exc_depth()
 
             args_repr = _format_named_args(args, kwargs) if collect_args else None
 
+            if hasattr(real_func, "__flowtrace_real_name__"):
+                target_name = real_func.__flowtrace_real_name__  # type: ignore[attr-defined]
+            elif hasattr(real_func, "__name__"):
+                target_name = real_func.__name__  # type: ignore[attr-defined]
+            else:
+                target_name = real_func.__class__.__name__
+
             sess = getattr(sys.monitoring, "_flowtrace_session", None)
             if sess and getattr(sess, "active", False):
                 sess.push_meta_for_func(
-                    wrapper.__code__.co_name,  # type: ignore[attr-defined]
+                    target_name,
                     args_repr=args_repr,
                     collect_args=collect_args,
                     collect_result=collect_result,
                     collect_timing=collect_timing,
-                    collect_exc_tb=collect_exc,
                     exc_tb_depth=depth,
                 )
 

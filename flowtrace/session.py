@@ -38,7 +38,6 @@ class TraceSession:
         default_collect_args: bool = True,
         default_collect_result: bool = True,
         default_collect_timing: bool = True,
-        default_collect_exc_tb: bool = False,
         default_exc_tb_depth: int = 2,
     ):
         self.active: bool = False
@@ -46,7 +45,6 @@ class TraceSession:
         self.default_collect_args = default_collect_args
         self.default_collect_result = default_collect_result
         self.default_collect_timing = default_collect_timing
-        self.default_collect_exc_tb = default_collect_exc_tb
         self.default_exc_tb_depth = default_exc_tb_depth
 
         self.events: list[TraceEvent] = []
@@ -54,15 +52,12 @@ class TraceSession:
 
         # очередь метаданных от декоратора для КОНКРЕТНОГО следующего вызова функции
         # func_name -> list of (args_repr, collect_args, collect_result, collect_timing, collect_exc_tb, exc_tb_depth)
-        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool, bool, int]]] = (
-            defaultdict(list)
+        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool, int]]] = defaultdict(
+            list
         )
 
-        self.open_exc_events: dict[int, list[int]] = defaultdict(
-            list
-        )  # "открытые" исключения на фрейм
         self.current_exc_by_call: dict[int, int] = {}  # call_event_id -> event_id исключения
-        self._exc_prefs_by_call: dict[int, tuple[bool, int]] = {}
+        self._exc_depth_by_call: dict[int, int] = {}
 
         self.context = ExecutionContext(
             thread_id=threading.get_ident(),
@@ -123,7 +118,6 @@ class TraceSession:
         collect_args = self.default_collect_args
         collect_result = self.default_collect_result
         collect_timing = self.default_collect_timing
-        collect_exc_tb = self.default_collect_exc_tb
 
         exc_tb_depth = self.default_exc_tb_depth
         args_repr: str | None = None
@@ -135,7 +129,6 @@ class TraceSession:
                 collect_args,
                 collect_result,
                 collect_timing,
-                collect_exc_tb,
                 exc_tb_depth,
             ) = q.pop(0)
             if not q:
@@ -161,8 +154,8 @@ class TraceSession:
                 context=ctx,
             )
         )
-        # Чтобы не раздувать CallEvent, запоминаем настройки по call_id
-        self._exc_prefs_by_call[event_id] = (collect_exc_tb, exc_tb_depth)
+        # Запоминаем глубину traceback именно для этого call_id
+        self._exc_depth_by_call[event_id] = exc_tb_depth
 
     def on_return(self, func_name: str, result: Any = None) -> None:
         if not self.active:
@@ -257,15 +250,12 @@ class TraceSession:
         """Публичная обёртка над _current_call_event_id (для внешнего использования внутри ядра)."""
         return self._current_call_event_id(func_name)
 
-    def get_exc_prefs(self, call_event_id: int) -> tuple[bool, int]:
+    def get_exc_depth(self, call_event_id: int) -> int:
         """
-        Возвращает (collect_exc_tb, exc_tb_depth) для данного вызова.
-        Безопасная обёртка над внутренним словарём _exc_prefs_by_call.
+        Возвращает глубину traceback для данного вызова.
+        Если для конкретного call_id нет записи — используем дефолт.
         """
-        return self._exc_prefs_by_call.get(
-            call_event_id,
-            (self.default_collect_exc_tb, self.default_exc_tb_depth),
-        )
+        return self._exc_depth_by_call.get(call_event_id, self.default_exc_tb_depth)
 
     def _find_frame_index(self, func_name: str) -> int | None:
         for i, (name, _, _) in enumerate(reversed(self.stack), start=1):
@@ -307,23 +297,22 @@ class TraceSession:
         if call_event_id is not None:
             # текущая активная запись исключения этого фрейма
             self.current_exc_by_call[call_event_id] = ev.id
-            # «открытым» считаем только когда статус ещё не определён
-            if caught is None:
-                self.open_exc_events[call_event_id].append(ev.id)
         return ev.id
 
-    def on_exception_raised(self, func_name: str, exc_type: str, exc_msg: str, exc_tb=None) -> None:
+    def on_exception_raised(
+        self,
+        func_name: str,
+        exc_type: str,
+        exc_msg: str,
+        exc_tb: str | None = None,
+    ) -> None:
         # при raised exception мы еще не знаем судьбу этого exception, поэтому его статус будет None.
         if not self.active:
             return
+
         call_id = self._current_call_event_id(func_name)
-        # нужно ли собирать traceback
-        collect_tb, _ = self._exc_prefs_by_call.get(
-            call_id if call_id is not None else -1,
-            (self.default_collect_exc_tb, self.default_exc_tb_depth),
-        )
-        tb_text = exc_tb if collect_tb else None
-        self._append_exception(call_id, func_name, exc_type, exc_msg, caught=None, exc_tb=tb_text)
+
+        self._append_exception(call_id, func_name, exc_type, exc_msg, caught=None, exc_tb=exc_tb)
 
     def on_exception_handled(self, func_name: str, exc_type: str, exc_msg: str) -> None:
         # если exception попадает в EXCEPTION_HANDLED, то except уже сработал - убираем из открытых
@@ -340,7 +329,6 @@ class TraceSession:
             ev = self.events[ev_id]
             if isinstance(ev, ExceptionEvent):
                 ev.caught = True
-            self.open_exc_events.get(call_id, []).clear()
         else:
             self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
 
@@ -383,7 +371,6 @@ class TraceSession:
                 self._append_exception(current_call_id, func_name, exc_type, exc_msg, caught=False)
             # фрейм завершился исключением — чистим маркеры
             self.current_exc_by_call.pop(current_call_id, None)
-            self.open_exc_events.pop(current_call_id, None)
 
         # снимаем фрейм
         if idx is not None:
@@ -413,7 +400,6 @@ class TraceSession:
         collect_args: bool,
         collect_result: bool,
         collect_timing: bool,
-        collect_exc_tb: bool,
         exc_tb_depth: int,
     ):
         """Кладём готовые метаданные ДЛЯ СЛЕДУЮЩЕГО вызова данной функции."""
@@ -422,11 +408,11 @@ class TraceSession:
             collect_args,
             collect_result,
             collect_timing,
-            collect_exc_tb,
             exc_tb_depth,
         ))
 
-    def get_execution_context(self) -> ExecutionContext:
+    @staticmethod
+    def get_execution_context() -> ExecutionContext:
         """Возвращает свежий ExecutionContext для текущего события."""
         thread_id = threading.get_ident()
         task_id = None
@@ -445,12 +431,12 @@ class TraceSession:
             with suppress(Exception):
                 task_name = task.get_name()
 
-        ctx = ExecutionContext(
-            thread_id=thread_id, task_id=task_id, task_parent_id=parent_id, task_name=task_name
+        return ExecutionContext(
+            thread_id=thread_id,
+            task_id=task_id,
+            task_parent_id=parent_id,
+            task_name=task_name,
         )
-        self.context = ctx
-
-        return ctx
 
     def _handle_raise(self, func_name: str, exc: BaseException | None):
         if not self.active:
@@ -463,10 +449,10 @@ class TraceSession:
         if call_id is None and self.stack:
             _, _, call_id = self.stack[-1]
 
-        collect_tb, depth = self.get_exc_prefs(call_id if call_id is not None else -1)
+        depth = self.get_exc_depth(call_id if call_id is not None else -1)
 
         tb_text = None
-        if exc is not None and collect_tb:
+        if exc is not None and depth > 0:
             tb = exc.__traceback__
             if tb:
                 raw_frames = traceback.extract_tb(tb)

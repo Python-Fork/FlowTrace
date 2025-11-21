@@ -38,8 +38,7 @@ def start_tracing(
         default_collect_timing=(
             cfg.show_timing if default_show_timing is None else default_show_timing
         ),
-        default_collect_exc_tb=True,
-        default_exc_tb_depth=cfg.exc_depth() or 2,
+        default_exc_tb_depth=cfg.exc_depth(),
     )
 
     # 2. Регистрируем её в contextvar

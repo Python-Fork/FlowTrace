@@ -114,6 +114,8 @@ def print_async_tree(events: list[TraceEvent]) -> None:
             node = _AsyncNode(tid, parent)
             by_id[tid] = node
 
+        node.events.append(ev)
+
     # связываем parent → children
     for _tid, node in by_id.items():
         if node.parent_id is None:
@@ -124,3 +126,6 @@ def print_async_tree(events: list[TraceEvent]) -> None:
                 pnode.children.append(node)
             else:
                 roots.append(node)
+
+    for root in roots:
+        _print_node(root)

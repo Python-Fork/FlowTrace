@@ -4,12 +4,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-@dataclass
+@dataclass(slots=True)
 class ExecutionContext:
     """
     Общий контекст исполнения (поток/таска и т.п.).
-    Пока можем использовать только thread_id, но оставляем
-    поля под future-async.
     """
 
     thread_id: int
@@ -18,7 +16,7 @@ class ExecutionContext:
     task_name: str | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class CallEvent:
     id: int
     kind: str
@@ -30,12 +28,7 @@ class CallEvent:
     result_repr: str | None = None
     duration: float | None = None
 
-    # для exception
-    exc_type: str | None = None
-    exc_msg: str | None = None
-    caught: bool | None = None  # None = "открытое", True = "поймано", False = "ушло наружу"
-    via_exception: bool = False
-    exc_tb: str | None = None  # компактный срез traceback (если собирали)
+    via_exception: bool | None = None
 
     # флаги того, что ДОЛЖНО было собираться для этого вызова
     collect_args: bool = False
@@ -45,7 +38,7 @@ class CallEvent:
     context: ExecutionContext | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class AsyncTransitionEvent:
     """
     Событие перехода в async-мире:
@@ -69,7 +62,7 @@ class AsyncTransitionEvent:
     context: ExecutionContext | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class ExceptionEvent:
     """
     Отдельное событие исключения.

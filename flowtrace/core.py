@@ -51,7 +51,7 @@ def start_tracing(
     start_monitoring(TOOL_ID)
 
     # 5. Запоминаем сессию внутри sys.monitoring (для удобства декораторов)
-    sys.monitoring._flowtrace_session = sess  # type: ignore[attr-defined]
+    sys.monitoring.flowtrace_session = sess  # type: ignore[attr-defined]
 
 
 def is_tracing_active() -> bool:
@@ -69,7 +69,7 @@ def stop_tracing() -> list[TraceEvent]:
 
     data = sess.stop()  # деактивирует сессию и вырубит async_hooks
     _last_data = data
-    sys.monitoring._flowtrace_session = None  # type: ignore[attr-defined]
+    sys.monitoring.flowtrace_session = None  # type: ignore[attr-defined]
     return data
 
 
@@ -91,6 +91,7 @@ __all__ = [
     "CallEvent",
     "active_tracing",
     "get_trace_data",
+    "is_tracing_active",
     "start_tracing",
     "stop_tracing",
 ]

@@ -13,6 +13,8 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 @overload
 def trace(func: F) -> F: ...
+
+
 @overload
 def trace(
     func: None = None,
@@ -40,16 +42,19 @@ def trace(
         def _format_named_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
             try:
                 bound = sig.bind_partial(*args, **kwargs)
-                bound.apply_defaults()
-                parts: list[str] = []
-                for name, value in bound.arguments.items():
-                    r = repr(value)
-                    if len(r) > 200:
-                        r = r[:197] + "..."
-                    parts.append(f"{name}={r}")
-                return ", ".join(parts)
-            except Exception:
+            except TypeError:
                 return "<unrepr>"
+            bound.apply_defaults()
+            parts: list[str] = []
+            for name, value in bound.arguments.items():
+                try:
+                    r = repr(value)
+                except Exception:
+                    r = "<unrepr>"
+                if len(r) > 200:
+                    r = r[:197] + "..."
+                parts.append(f"{name}={r}")
+            return ", ".join(parts)
 
         @wraps(real_func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -62,10 +67,10 @@ def trace(
             collect_result = show_result if show_result is not None else cfg.show_result
             collect_timing = show_timing if show_timing is not None else cfg.show_timing
 
-            if isinstance(show_exc, int):
-                depth = max(0, show_exc)
-            elif isinstance(show_exc, bool):
+            if isinstance(show_exc, bool):
                 depth = cfg.exc_depth() if show_exc else 0
+            elif isinstance(show_exc, int):
+                depth = max(0, show_exc)
             elif exc_tb_depth is not None:
                 depth = max(0, int(exc_tb_depth))
             else:
@@ -80,7 +85,7 @@ def trace(
             else:
                 target_name = real_func.__class__.__name__
 
-            sess = getattr(sys.monitoring, "_flowtrace_session", None)
+            sess = getattr(sys.monitoring, "flowtrace_session", None)
             if sess and getattr(sess, "active", False):
                 sess.push_meta_for_func(
                     target_name,

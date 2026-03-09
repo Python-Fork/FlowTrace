@@ -7,7 +7,7 @@ from flowtrace import active_tracing, get_trace_data
 from flowtrace.events import ExceptionEvent
 
 
-@flowtrace.trace(show_exc=True)
+@flowtrace.trace(exc_tb_depth=True)
 def fail_once():
     raise ValueError("boom")
 

@@ -17,6 +17,7 @@ def trace(func: F) -> F: ...
 
 @overload
 def trace(
+    func: None = None,
     *,
     show_args: bool | None = None,
     show_result: bool | None = None,

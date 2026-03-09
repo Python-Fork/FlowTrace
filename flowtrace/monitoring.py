@@ -120,6 +120,7 @@ def _norm(p: Path) -> str:
 
 _REPO_ROOT_STR = _norm(Path(__file__).resolve().parent.parent)
 _EXAMPLES_DIR_STR = _REPO_ROOT_STR + "/examples"
+_TESTS_DIR_STR = _REPO_ROOT_STR + "/tests"
 _STD_PREFIXES_STR = tuple(_norm(p) for p in {Path(sys.prefix), Path(sys.base_prefix)} if p.exists())
 
 # слабый кэш для фильтрации кода (ускоряет _is_user_code)
@@ -132,6 +133,9 @@ def _is_user_path_norm(sp: str) -> bool:
         return False
 
     if sp.startswith(_EXAMPLES_DIR_STR):
+        return True
+
+    if sp.startswith(_EXAMPLES_DIR_STR) or sp.startswith(_TESTS_DIR_STR):
         return True
 
     return not sp.startswith(_REPO_ROOT_STR)

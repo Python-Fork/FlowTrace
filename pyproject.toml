@@ -31,6 +31,11 @@ Issues = "https://github.com/Python-Fork/FlowTrace/issues"
 target-version = "py312"
 line-length = 100
 preview = true
+exclude = [
+    "docs",
+    "README.md",
+    "README.ru.md",
+]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -25,7 +25,7 @@ def start_tracing(
     default_show_args: bool | None = None,
     default_show_result: bool | None = None,
     default_show_timing: bool | None = None,
-    default_show_exc: bool | None = None,
+    default_exc_tb_depth: int | None = None,
 ) -> None:
     cfg = get_config()
 
@@ -38,7 +38,9 @@ def start_tracing(
         default_collect_timing=(
             cfg.show_timing if default_show_timing is None else default_show_timing
         ),
-        default_exc_tb_depth=cfg.exc_depth(),
+        default_exc_tb_depth=(
+            cfg.exc_depth() if default_exc_tb_depth is None else max(0, int(default_exc_tb_depth))
+        ),
     )
 
     # 2. Регистрируем её в contextvar
@@ -47,7 +49,7 @@ def start_tracing(
     # 3. Запускаем сессию: active + async-hooks
     sess.start()
 
-    # 4. Включаем мониторинг (после создания сессии!)
+    # 4. Включаем мониторинг
     start_monitoring(TOOL_ID)
 
     # 5. Запоминаем сессию внутри sys.monitoring (для удобства декораторов)
@@ -67,7 +69,7 @@ def stop_tracing() -> list[TraceEvent]:
 
     stop_monitoring(TOOL_ID)
 
-    data = sess.stop()  # деактивирует сессию и вырубит async_hooks
+    data = sess.stop()
     _last_data = data
     sys.monitoring.flowtrace_session = None  # type: ignore[attr-defined]
     return data

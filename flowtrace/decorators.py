@@ -17,12 +17,10 @@ def trace(func: F) -> F: ...
 
 @overload
 def trace(
-    func: None = None,
     *,
     show_args: bool | None = None,
     show_result: bool | None = None,
     show_timing: bool | None = None,
-    show_exc: bool | int | None = None,
     exc_tb_depth: int | None = None,
 ) -> Callable[[F], F]: ...
 
@@ -33,7 +31,6 @@ def trace(
     show_args: bool | None = None,
     show_result: bool | None = None,
     show_timing: bool | None = None,
-    show_exc: bool | int | None = None,
     exc_tb_depth: int | None = None,
 ) -> F | Callable[[F], F]:
     def decorator(real_func: F) -> F:
@@ -67,14 +64,7 @@ def trace(
             collect_result = show_result if show_result is not None else cfg.show_result
             collect_timing = show_timing if show_timing is not None else cfg.show_timing
 
-            if isinstance(show_exc, bool):
-                depth = cfg.exc_depth() if show_exc else 0
-            elif isinstance(show_exc, int):
-                depth = max(0, show_exc)
-            elif exc_tb_depth is not None:
-                depth = max(0, int(exc_tb_depth))
-            else:
-                depth = cfg.exc_depth()
+            depth = cfg.exc_depth() if exc_tb_depth is None else max(0, int(exc_tb_depth))
 
             args_repr = _format_named_args(args, kwargs) if collect_args else None
 

@@ -70,12 +70,13 @@ def print_events_debug(events: list[TraceEvent] | None = None) -> None:
     for ev in events:
         print(_format_event(ev))
 
-    # async-tree только если есть task_id
     if any(ev.context and ev.context.task_id is not None for ev in events):
         print()
+        from flowtrace.async_reconstruct import build_task_traces
         from flowtrace.formatters.async_tree import print_async_tree
 
-        print_async_tree(events)
+        tasks = build_task_traces(events)
+        print_async_tree(tasks, events)
 
 
 def print_summary(events: list[TraceEvent] | None = None) -> None:

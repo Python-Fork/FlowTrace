@@ -1,131 +1,91 @@
-# flowtrace/formatters/async_tree.py
-
 from __future__ import annotations
 
-from flowtrace.events import AsyncTransitionEvent, CallEvent, TraceEvent
+from ..async_model import AwaitSegment, TaskTrace
+from ..events import CallEvent, TraceEvent
 
 
-class _AsyncNode:
-    """
-    Узел дерева async-тасков.
-    """
-
-    __slots__ = ("children", "events", "parent_id", "task_id")
-
-    def __init__(self, task_id: int, parent_id: int | None):
-        self.task_id = task_id
-        self.parent_id = parent_id
-        self.events: list[TraceEvent] = []
-        self.children: list[_AsyncNode] = []
+def print_async_tree(tasks: dict[int, TaskTrace], events: list[TraceEvent]) -> None:
+    ordered_tasks = sorted(tasks.values(), key=lambda t: t.first_event_index or 10**9)
+    for task in ordered_tasks:
+        print_task_tree(task, tasks, events)
+        print()
 
 
-def _build_async_tree(events: list[TraceEvent]) -> list[_AsyncNode]:
-    """
-    Строит дерево async-задач.
-    Возвращает список корневых тасков.
-    """
-    by_id: dict[int, _AsyncNode] = {}
+def print_task_tree(task: TaskTrace, tasks: dict[int, TaskTrace], events: list[TraceEvent]) -> None:
+    header = f"Task#{task.task_id}"
+    if task.task_name:
+        header += f" {task.task_name}"
+    if task.parent_task_id is not None:
+        header += f" (parent={task.parent_task_id})"
 
+    print(header)
+
+    for root_id in task.roots:
+        print_call_subtree(root_id, task, tasks, events, indent="  ")
+
+
+def print_call_subtree(
+    call_id: int,
+    task: TaskTrace,
+    tasks: dict[int, TaskTrace],
+    events: list[TraceEvent],
+    indent: str,
+) -> None:
+    ev = _find_call(call_id, events)
+    if ev is None:
+        return
+
+    print(f"{indent}→ {ev.func_name}()")
+
+    for seg in task.await_segments:
+        if seg.call_id == call_id:
+            print_await_segment(seg, task, tasks, events, indent + "  ")
+
+    # --- печать детей функций ---
+    for child_id in task.call_children.get(call_id, []):
+        print_call_subtree(child_id, task, tasks, events, indent + "  ")
+
+    ret = _find_return(call_id, events)
+    if ret is not None and ret.result_repr is not None:
+        print(f"{indent}← {ev.func_name}() → {ret.result_repr}")
+    else:
+        print(f"{indent}← {ev.func_name}()")
+
+
+def print_await_segment(
+    seg: AwaitSegment,
+    task: TaskTrace,
+    tasks: dict[int, TaskTrace],
+    events: list[TraceEvent],
+    indent: str,
+) -> None:
+    detail = "await"
+    dur = ""
+
+    if seg.duration is not None:
+        dur = f" [{seg.duration * 1000:.2f} ms]"
+
+    print(f"{indent}↯ {detail}{dur}")
+
+    # --- дети внутри await ---
+    for child_tid in seg.children_task_ids:
+        child = tasks.get(child_tid)
+        if child is None:
+            continue
+        print(f"{indent}  Task#{child_tid}")
+        for root in child.roots:
+            print_call_subtree(root, child, tasks, events, indent + "    ")
+
+
+def _find_call(call_id: int, events: list[TraceEvent]) -> CallEvent | None:
     for ev in events:
-        ctx = ev.context
-        if ctx is None:
-            continue
-
-        tid = ctx.task_id
-        parent = ctx.task_parent_id
-
-        if tid is None:
-            continue
-
-        if tid not in by_id:
-            by_id[tid] = _AsyncNode(tid, parent)
-
-        by_id[tid].events.append(ev)
-
-    if not by_id:
-        return []
-
-    roots: list[_AsyncNode] = []
-
-    for _tid, node in by_id.items():
-        if node.parent_id is None:
-            roots.append(node)
-        else:
-            pnode: _AsyncNode | None = by_id.get(node.parent_id)
-            if pnode is not None:
-                pnode.children.append(node)
-            else:
-                roots.append(node)
-
-    return roots
+        if isinstance(ev, CallEvent) and ev.id == call_id:
+            return ev
+    return None
 
 
-def _print_node(node: _AsyncNode, indent: str = ""):
-    """
-    Печать одного узла async-задачи.
-    """
-
-    print(f"{indent}[A#{node.task_id}]")
-
-    pad = indent + "    "
-
-    for ev in node.events:
-        if isinstance(ev, CallEvent):
-            # вызов функции
-            args = f"({ev.args_repr})" if ev.args_repr else "()"
-            print(f"{pad}→ {ev.func_name}{args}")
-
-        elif ev.kind == "return" and isinstance(ev, CallEvent):
-            res = ev.result_repr if ev.result_repr is not None else ""
-            if res != "":
-                print(f"{pad}← {ev.func_name} → {res}")
-            else:
-                print(f"{pad}← {ev.func_name}")
-
-        elif isinstance(ev, AsyncTransitionEvent):
-            if ev.kind == "await":
-                print(f"{pad}↯ await")
-            elif ev.kind == "resume":
-                print(f"{pad}⟳ resume")
-            elif ev.kind == "yield":
-                detail = f" → {ev.detail}" if ev.detail else ""
-                print(f"{pad}yield{detail}")
-
-    # Печатаем дочерние задачи
-    for child in node.children:
-        _print_node(child, pad)
-
-
-def print_async_tree(events: list[TraceEvent]) -> None:
-    by_id: dict[int, _AsyncNode] = {}
-    roots: list[_AsyncNode] = []
-
-    # построение деревьев
+def _find_return(call_id: int, events: list[TraceEvent]) -> CallEvent | None:
     for ev in events:
-        ctx = ev.context
-        if ctx is None or ctx.task_id is None:
-            continue
-
-        tid = ctx.task_id
-        parent = ctx.task_parent_id
-
-        node = by_id.get(tid)
-        if not node:
-            node = _AsyncNode(tid, parent)
-            by_id[tid] = node
-
-        node.events.append(ev)
-
-    # связываем parent → children
-    for _tid, node in by_id.items():
-        if node.parent_id is None:
-            roots.append(node)
-        else:
-            pnode: _AsyncNode | None = by_id.get(node.parent_id)
-            if pnode is not None:
-                pnode.children.append(node)
-            else:
-                roots.append(node)
-
-    for root in roots:
-        _print_node(root)
+        if isinstance(ev, CallEvent) and ev.kind == "return" and ev.parent_id == call_id:
+            return ev
+    return None

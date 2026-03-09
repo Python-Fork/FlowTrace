@@ -8,7 +8,7 @@ from pathlib import Path
 
 Cb = Callable[..., None]
 
-# Запоминаем активные колбеки на tool_id
+# Активные колбеки на tool_id
 _ACTIVE_CALLBACKS: dict[int, dict[str, Cb]] = {}
 
 
@@ -60,7 +60,7 @@ def stop_monitoring(tool_id: int) -> None:
     handlers = _ACTIVE_CALLBACKS.pop(tool_id, None)
 
     # даже если по какой-то причине в _ACTIVE_CALLBACKS ничего нет —
-    # подчистим callback'и на всякий
+    # подчистим callbacks на всякий
     names = (
         "PY_START",
         "PY_RETURN",
@@ -90,7 +90,7 @@ def reserve_tool_id(name: str = "flowtrace") -> int:
 
 
 def make_handler(event_label: str, dispatch):
-    """Создаёт колбэк sys.monitoring → вызывает наш общий диспетчер."""
+    """Создаёт колбэк sys.monitoring → вызывает общий диспетчер."""
 
     def handler(*args):
         if not args:
@@ -114,61 +114,51 @@ def _dispatch_event(label: str, code, raw_args):
 
 
 def _norm(p: Path) -> str:
-    # нормализуем и нижний регистр для кроссплатформенности
+    """Нормализация путей"""
     return str(p).replace("\\", "/").lower()
 
 
-# системные и собственные пути (для фильтрации traceback)
-_HERE_STR = _norm(Path(__file__).resolve().parent)
+_REPO_ROOT_STR = _norm(Path(__file__).resolve().parent.parent)
+_EXAMPLES_DIR_STR = _REPO_ROOT_STR + "/examples"
 _STD_PREFIXES_STR = tuple(_norm(p) for p in {Path(sys.prefix), Path(sys.base_prefix)} if p.exists())
 
 # слабый кэш для фильтрации кода (ускоряет _is_user_code)
 _IS_USER_CODE_CACHE: weakref.WeakKeyDictionary[object, bool] = weakref.WeakKeyDictionary()
 
 
+def _is_user_path_norm(sp: str) -> bool:
+    """Правило фильтрации уже нормализованного абсолютного пути."""
+    if any(sp.startswith(pref) for pref in _STD_PREFIXES_STR) or "site-packages/" in sp:
+        return False
+
+    if sp.startswith(_EXAMPLES_DIR_STR):
+        return True
+
+    return not sp.startswith(_REPO_ROOT_STR)
+
+
 def _is_user_code(code) -> bool:
-    """Определяет, относится ли код к пользовательскому (а не stdlib/venv/самой FlowTrace)."""
+    """Определяет, относится ли code object к пользовательскому коду."""
     cached = _IS_USER_CODE_CACHE.get(code)
     if cached is not None:
         return cached
+
     try:
         p = Path(code.co_filename).resolve()
     except Exception:
         _IS_USER_CODE_CACHE[code] = False
         return False
 
-    sp = _norm(p)
-
-    # Разрешаем примеры внутри FlowTrace/examples
-    if sp.startswith(_HERE_STR + "/examples"):
-        _IS_USER_CODE_CACHE[code] = True
-        return True
-
-    # Скрываем саму либу
-    if sp.startswith(_HERE_STR):
-        _IS_USER_CODE_CACHE[code] = False
-        return False
-
-    # stdlib / venv / site-packages — тоже не показываем
-    if any(sp.startswith(pref) for pref in _STD_PREFIXES_STR) or "site-packages/" in sp:
-        _IS_USER_CODE_CACHE[code] = False
-        return False
-
-    _IS_USER_CODE_CACHE[code] = True
-    return True
+    result = _is_user_path_norm(_norm(p))
+    _IS_USER_CODE_CACHE[code] = result
+    return result
 
 
 def _is_user_path(path: str) -> bool:
-    """То же самое, но для обычного пути (строки)."""
+    """Определяет, относится ли путь к пользовательскому коду."""
     try:
         p = Path(path).resolve()
     except Exception:
         return False
 
-    sp = _norm(p)
-
-    if any(sp.startswith(pref) for pref in _STD_PREFIXES_STR) or "site-packages/" in sp:
-        return False
-
-    # не показываем саму FlowTrace
-    return not sp.startswith(_HERE_STR)
+    return _is_user_path_norm(_norm(p))

@@ -108,9 +108,9 @@ def _dispatch_event(label: str, code, raw_args):
     from flowtrace.session import CURRENT_SESSION
 
     sess = CURRENT_SESSION.get()
-    if not (sess and sess.active):
+    if not (sess and sess.state.active):
         return
-    sess.on_raw_event(label, code, raw_args)
+    sess.raw_dispatcher.dispatch(label, code, raw_args)
 
 
 def _norm(p: Path) -> str:

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import threading
-import traceback
 from collections import defaultdict
 from contextlib import suppress
 from contextvars import ContextVar
-from pathlib import Path
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Literal
 
@@ -24,7 +22,7 @@ from flowtrace.events import (
     ExecutionContext,
     TraceEvent,
 )
-from flowtrace.monitoring import _is_user_code
+from flowtrace.raw_dispatcher import RawEventDispatcher
 
 CURRENT_SESSION: ContextVar[TraceSession | None] = ContextVar(
     "flowtrace_session",
@@ -32,38 +30,489 @@ CURRENT_SESSION: ContextVar[TraceSession | None] = ContextVar(
 )
 
 
+@dataclass(slots=True)
+class ActiveCall:
+    """Активный вызов в стеке."""
+
+    func_name: str
+    start_time: float
+    call_event_id: int
+
+
+@dataclass(slots=True)
+class PendingCallMeta:
+    """Метаданные для следующего вызова конкретной функции."""
+
+    args_repr: str | None
+    show_args: bool
+    show_result: bool
+    show_timing: bool
+    exc_tb_depth: int
+
+
+@dataclass(slots=True)
+class SessionState:
+    """Хранение состояния трассировки."""
+
+    active: bool = False
+    events: list[TraceEvent] = field(default_factory=list)
+    stack: list[ActiveCall] = field(default_factory=list)
+    # очередь метаданных от декоратора для КОНКРЕТНОГО следующего вызова функции
+    # func_name -> list[PendingCallMeta]
+    pending_meta: defaultdict[str, list[PendingCallMeta]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    current_exc_by_call: dict[int, int] = field(
+        default_factory=dict
+    )  # call_event_id -> event_id исключения
+    exc_depth_by_call: dict[int, int] = field(default_factory=dict)
+
+
+class ExecutionContextProvider:
+    @staticmethod
+    def get_current() -> ExecutionContext:
+        """Возвращает свежий ExecutionContext для текущего события."""
+        thread_id = threading.get_ident()
+        task_id = None
+        parent_id = None
+        task_name = None
+
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+
+        if task is not None:
+            task_id = get_async_id(task)
+            if task_id is not None:
+                parent_id = ASYNC_PARENT.get(task_id)
+            with suppress(Exception):
+                task_name = task.get_name()
+
+        return ExecutionContext(
+            thread_id=thread_id,
+            task_id=task_id,
+            task_parent_id=parent_id,
+            task_name=task_name,
+        )
+
+
+class CallStackInspector:
+    """
+    Read-only helper для работы со стеком вызовов (SessionState.stack).
+
+    Предоставляет удобные методы для поиска
+    и получения информации об активных вызовах.
+    """
+
+    def __init__(self, state: SessionState):
+        """
+        :param state: Общее состояние трассировки
+        """
+        self.state = state
+
+    # todo поиск фрейма не должен производиться по названию функции - не безопасно
+    def find_frame_index(self, func_name: str) -> int | None:
+        """
+        Ищет индекс последнего (верхнего) фрейма с данным именем функции.
+
+        Поиск идёт с конца стека (LIFO).
+
+        :param func_name: Имя функции
+        :return: индекс в стеке или None, если не найден
+        """
+        for i in range(len(self.state.stack) - 1, -1, -1):
+            active_call = self.state.stack[i]
+            if active_call.func_name == func_name:
+                return i
+        return None
+
+    def current_call_event_id(self, func_name: str) -> int | None:
+        """
+        Возвращает event_id текущего вызова функции.
+
+        :param func_name: Имя функции
+        :return: call_event_id или None, если фрейм не найден
+        """
+        idx = self.find_frame_index(func_name)
+        if idx is None:
+            return None
+        return self.state.stack[idx].call_event_id
+
+    def current_active_call(self, func_name: str) -> ActiveCall | None:
+        """
+        Возвращает объект ActiveCall для текущего вызова функции.
+
+        :param func_name: Имя функции
+        :return: ActiveCall или None, если не найден
+        """
+        idx = self.find_frame_index(func_name)
+        if idx is None:
+            return None
+        return self.state.stack[idx]
+
+    def top_call(self) -> ActiveCall | None:
+        """
+        Возвращает верхний элемент стека вызовов.
+
+        :return: ActiveCall или None, если стек пуст
+        """
+        if not self.state.stack:
+            return None
+        return self.state.stack[-1]
+
+
+class CallTracker:
+    def __init__(
+        self,
+        state: SessionState,
+        stack_inspector: CallStackInspector,
+        execution_context_provider: ExecutionContextProvider,
+        *,
+        default_show_args: bool,
+        default_show_result: bool,
+        default_show_timing: bool,
+        default_exc_tb_depth: int,
+    ):
+        self.state = state
+        self.stack_inspector = stack_inspector
+        self.execution_context_provider = execution_context_provider
+
+        self.default_show_args = default_show_args
+        self.default_show_result = default_show_result
+        self.default_show_timing = default_show_timing
+        self.default_exc_tb_depth = default_exc_tb_depth
+
+    def on_call(self, func_name: str) -> None:
+        if not self.state.active:
+            return
+
+        parent_id = self.state.stack[-1].call_event_id if self.state.stack else None
+        meta = self._resolve_meta(func_name)
+
+        args_repr = meta.args_repr
+        show_args = meta.show_args
+        show_result = meta.show_result
+        show_timing = meta.show_timing
+        exc_tb_depth = meta.exc_tb_depth
+
+        start_time = perf_counter() if show_timing else 0.0
+        call_event_id = len(self.state.events)
+        context = self.execution_context_provider.get_current()
+
+        self.state.events.append(
+            CallEvent(
+                id=call_event_id,
+                kind="call",
+                func_name=func_name,
+                parent_id=parent_id,
+                args_repr=args_repr if show_args else None,
+                show_args=show_args,
+                show_result=show_result,
+                show_timing=show_timing,
+                context=context,
+            )
+        )
+        self.state.stack.append(
+            ActiveCall(
+                func_name=func_name,
+                start_time=start_time,
+                call_event_id=call_event_id,
+            )
+        )
+        # Запоминаем глубину traceback именно для этого call_id
+        self.state.exc_depth_by_call[call_event_id] = exc_tb_depth
+
+    def _resolve_meta(self, func_name: str) -> PendingCallMeta:
+        q = self.state.pending_meta.get(func_name)
+        if q:
+            meta = q.pop()
+            if not q:
+                self.state.pending_meta.pop(func_name, None)
+            return meta
+
+        return PendingCallMeta(
+            args_repr=None,
+            show_args=self.default_show_args,
+            show_result=self.default_show_result,
+            show_timing=self.default_show_timing,
+            exc_tb_depth=self.default_exc_tb_depth,
+        )
+
+    def _close_call(
+        self,
+        func_name: str,
+        *,
+        result: Any = None,
+        via_exception: bool = False,
+    ) -> int | None:
+        if not self.state.active:
+            return None
+
+        frame_index = self.stack_inspector.find_frame_index(func_name)
+        if frame_index is None:
+            return None
+
+        active_call = self.state.stack[frame_index]
+        call_event_id = active_call.call_event_id
+        start_time = active_call.start_time
+
+        call_ev = self.state.events[call_event_id]
+        if isinstance(call_ev, CallEvent):
+            show_timing = call_ev.show_timing
+            show_result = call_ev.show_result
+        else:
+            show_timing = False
+            show_result = False
+
+        duration: float | None = None
+        if show_timing and start_time > 0.0:
+            duration = perf_counter() - start_time
+
+        result_repr: str | None = None
+        if not via_exception and show_result:
+            try:
+                r = repr(result)
+                if len(r) > 60:
+                    r = r[:57] + "..."
+                result_repr = r
+            except Exception:
+                result_repr = "<unrepr>"
+
+        context = self.execution_context_provider.get_current()
+
+        self.state.events.append(
+            CallEvent(
+                id=len(self.state.events),
+                kind="return",
+                func_name=func_name,
+                parent_id=call_event_id,
+                result_repr=result_repr,
+                duration=duration,
+                via_exception=via_exception,
+                context=context,
+            )
+        )
+
+        del self.state.stack[frame_index:]
+        return call_event_id
+
+    def on_return(self, func_name: str, result: Any = None) -> None:
+        self._close_call(func_name, result=result, via_exception=False)
+
+    def close_via_exception(self, func_name: str) -> int | None:
+        return self._close_call(func_name, via_exception=True)
+
+
+class ExceptionTracker:
+    def __init__(
+        self,
+        state: SessionState,
+        stack_inspector: CallStackInspector,
+        execution_context_provider: ExecutionContextProvider,
+        call_tracker: CallTracker,
+    ):
+        self.state = state
+        self.stack_inspector = stack_inspector
+        self.execution_context_provider = execution_context_provider
+        self.call_tracker = call_tracker
+
+    def _append_exception(
+        self,
+        call_event_id: int | None,
+        func_name: str,
+        exc_type: str,
+        exc_msg: str,
+        caught: bool | None,
+        exc_tb: str | None = None,
+    ) -> int:
+        context = self.execution_context_provider.get_current()
+
+        ev = ExceptionEvent(
+            id=len(self.state.events),
+            func_name=func_name,
+            parent_id=call_event_id,
+            exc_type=exc_type,
+            exc_msg=exc_msg,
+            caught=caught,
+            via_exception=False,  # это просто “исключение произошло”, а не “return через exc”
+            exc_tb=exc_tb,
+            context=context,
+        )
+
+        self.state.events.append(ev)
+
+        if call_event_id is not None:
+            # текущая активная запись исключения этого фрейма
+            self.state.current_exc_by_call[call_event_id] = ev.id
+        return ev.id
+
+    def on_exception_raised(
+        self,
+        func_name: str,
+        exc_type: str,
+        exc_msg: str,
+        exc_tb: str | None = None,
+    ) -> None:
+        # при raised exception мы еще не знаем судьбу этого exception, поэтому его статус будет None.
+        if not self.state.active:
+            return
+
+        call_id = self.stack_inspector.current_call_event_id(func_name)
+
+        self._append_exception(call_id, func_name, exc_type, exc_msg, caught=None, exc_tb=exc_tb)
+
+    def on_exception_handled(self, func_name: str, exc_type: str, exc_msg: str) -> None:
+        # если exception попадает в EXCEPTION_HANDLED, то except уже сработал - убираем из открытых
+        if not self.state.active:
+            return
+
+        call_id = self.stack_inspector.current_call_event_id(func_name)
+        if call_id is None:
+            self._append_exception(None, func_name, exc_type, exc_msg, caught=True)
+            return
+
+        ev_id = self.state.current_exc_by_call.pop(call_id, None)
+        if ev_id is not None:
+            ev = self.state.events[ev_id]
+            if isinstance(ev, ExceptionEvent):
+                ev.caught = True
+            else:
+                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
+        else:
+            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
+
+    def on_unwind(self, func_name, exc_type, exc_msg):
+        # сигнал о сворачивании кадра из-за exception, но не означает, что exception поймали.
+        if not self.state.active:
+            return
+
+        call_id = self.stack_inspector.current_call_event_id(func_name)
+
+        if call_id is not None:
+            ev_id = self.state.current_exc_by_call.get(call_id)
+            if ev_id is not None:
+                ev = self.state.events[ev_id]
+                if isinstance(ev, ExceptionEvent) and ev.caught is not False:
+                    ev.caught = False
+            else:
+                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+
+        closed_call_id = self.call_tracker.close_via_exception(func_name)
+        if closed_call_id is not None:
+            self._clear_exception_state(closed_call_id)
+
+    def on_reraise(self, func_name, exc_type, exc_msg):
+        # сигнал о том, что исключение не погашено данным кадром и улетает дальше.
+        if not self.state.active:
+            return
+
+        call_id = self.stack_inspector.current_call_event_id(func_name)
+        if call_id is None:
+            self._append_exception(None, func_name, exc_type, exc_msg, caught=False)
+            return
+
+        ev_id = self.state.current_exc_by_call.get(call_id)
+        if ev_id is not None:
+            ev = self.state.events[ev_id]
+            if isinstance(ev, ExceptionEvent):
+                ev.caught = False
+            else:
+                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+        else:
+            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+
+    def _clear_exception_state(self, call_event_id: int) -> None:
+        self.state.current_exc_by_call.pop(call_event_id, None)
+        self.state.exc_depth_by_call.pop(call_event_id, None)
+
+
+class AsyncTracker:
+    def __init__(
+        self,
+        state: SessionState,
+        execution_context_provider: ExecutionContextProvider,
+    ):
+        self.state = state
+        self.execution_context_provider = execution_context_provider
+
+    def on_async(
+        self,
+        kind: Literal["await", "resume", "yield"],
+        func_name: str,
+        detail: str | None = None,
+    ) -> None:
+        if not self.state.active:
+            return
+
+        async_id: int | None = None
+        parent_async_id: int | None = None
+
+        if asyncio is not None:
+            try:
+                async_id = get_async_id()
+                if async_id is not None:
+                    parent_async_id = ASYNC_PARENT.get(async_id)
+            except Exception:
+                # если что-то странное с asyncio — просто не заполняем async_id
+                async_id = None
+                parent_async_id = None
+
+        context = self.execution_context_provider.get_current()
+
+        ev = AsyncTransitionEvent(
+            id=len(self.state.events),
+            kind=kind,
+            func_name=func_name,
+            async_id=async_id,
+            parent_async_id=parent_async_id,
+            detail=detail,
+            context=context,
+        )
+        self.state.events.append(ev)
+
+
 class TraceSession:
     def __init__(
         self,
-        default_collect_args: bool = True,
-        default_collect_result: bool = True,
-        default_collect_timing: bool = True,
+        default_show_args: bool = True,
+        default_show_result: bool = True,
+        default_show_timing: bool = True,
         default_exc_tb_depth: int = 2,
     ):
-        self.active: bool = False
-
-        self.default_collect_args = default_collect_args
-        self.default_collect_result = default_collect_result
-        self.default_collect_timing = default_collect_timing
+        self.default_show_args = default_show_args
+        self.default_show_result = default_show_result
+        self.default_show_timing = default_show_timing
         self.default_exc_tb_depth = default_exc_tb_depth
 
-        self.events: list[TraceEvent] = []
-        self.stack: list[tuple[str, float, int]] = []
-
-        # очередь метаданных от декоратора для КОНКРЕТНОГО следующего вызова функции
-        # func_name -> list of (args_repr, collect_args, collect_result, collect_timing, collect_exc_tb, exc_tb_depth)
-        self.pending_meta: dict[Any, list[tuple[str | None, bool, bool, bool, int]]] = defaultdict(
-            list
+        self.state = SessionState()
+        self.stack_inspector = CallStackInspector(self.state)
+        self.execution_context_provider = ExecutionContextProvider()
+        self.call_tracker = CallTracker(
+            state=self.state,
+            stack_inspector=self.stack_inspector,
+            default_show_timing=self.default_show_timing,
+            default_exc_tb_depth=self.default_exc_tb_depth,
+            default_show_result=self.default_show_result,
+            default_show_args=self.default_show_args,
+            execution_context_provider=self.execution_context_provider,
         )
-
-        self.current_exc_by_call: dict[int, int] = {}  # call_event_id -> event_id исключения
-        self._exc_depth_by_call: dict[int, int] = {}
-
-        self.context = ExecutionContext(
-            thread_id=threading.get_ident(),
-            task_id=None,
-            task_parent_id=None,
-            task_name=None,
+        self.exception_tracker = ExceptionTracker(
+            state=self.state,
+            stack_inspector=self.stack_inspector,
+            execution_context_provider=self.execution_context_provider,
+            call_tracker=self.call_tracker,
+        )
+        self.async_tracker = AsyncTracker(
+            state=self.state, execution_context_provider=self.execution_context_provider
+        )
+        self.raw_dispatcher = RawEventDispatcher(
+            state=self.state,
+            stack_inspector=self.stack_inspector,
+            call_tracker=self.call_tracker,
+            exception_tracker=self.exception_tracker,
+            async_tracker=self.async_tracker,
+            default_exc_tb_depth=self.default_exc_tb_depth,
         )
 
     @staticmethod
@@ -96,501 +545,15 @@ class TraceSession:
             uninstall_task_factory(loop)
 
     def start(self) -> None:
-        if self.active:
+        if self.state.active:
             return
-        self.active = True
+        self.state.active = True
         self._async_hooks_on()
 
     def stop(self) -> list[TraceEvent]:
-        if not self.active:
-            return self.events
+        if not self.state.active:
+            return self.state.events
 
-        self.active = False
+        self.state.active = False
         self._async_hooks_off()
-        return self.events
-
-    def on_call(self, func_name: str) -> None:
-        if not self.active:
-            return
-
-        parent_id = self.stack[-1][2] if self.stack else None
-
-        collect_args = self.default_collect_args
-        collect_result = self.default_collect_result
-        collect_timing = self.default_collect_timing
-
-        exc_tb_depth = self.default_exc_tb_depth
-        args_repr: str | None = None
-
-        q = self.pending_meta.get(func_name)
-        if q:
-            (
-                args_repr,
-                collect_args,
-                collect_result,
-                collect_timing,
-                exc_tb_depth,
-            ) = q.pop(0)
-            if not q:
-                self.pending_meta.pop(func_name, None)
-
-        start_time = perf_counter() if collect_timing else 0.0
-
-        event_id = len(self.events)
-        self.stack.append((func_name, start_time, event_id))
-
-        ctx = self.get_execution_context()
-
-        self.events.append(
-            CallEvent(
-                id=event_id,
-                kind="call",
-                func_name=func_name,
-                parent_id=parent_id,
-                args_repr=args_repr if collect_args else None,
-                collect_args=collect_args,
-                collect_result=collect_result,
-                collect_timing=collect_timing,
-                context=ctx,
-            )
-        )
-        # Запоминаем глубину traceback именно для этого call_id
-        self._exc_depth_by_call[event_id] = exc_tb_depth
-
-    def on_return(self, func_name: str, result: Any = None) -> None:
-        if not self.active:
-            return
-
-        frame_index = None
-        for i in range(len(self.stack) - 1, -1, -1):
-            name, _, _ = self.stack[i]
-            if name == func_name:
-                frame_index = i
-                break
-        if frame_index is None:
-            return
-
-        name, start, event_id = self.stack[frame_index]
-        call_ev = self.events[event_id]
-        if isinstance(call_ev, CallEvent):
-            collect_timing = call_ev.collect_timing
-            collect_result = call_ev.collect_result
-        else:
-            collect_timing = False
-            collect_result = False
-
-        del self.stack[frame_index:]
-
-        end: float = perf_counter() if collect_timing else 0.0
-        if collect_timing and start is not None:
-            duration = end - start
-        else:
-            duration = None
-
-        result_repr: str | None = None
-        if collect_result:
-            with suppress(Exception):
-                r = repr(result)
-                if len(r) > 60:
-                    r = r[:57] + "..."
-                result_repr = r
-            if "result_repr" not in locals():
-                result_repr = "<unrepr>"
-
-        ctx = self.get_execution_context()
-
-        self.events.append(
-            CallEvent(
-                id=len(self.events),
-                kind="return",
-                func_name=func_name,
-                parent_id=event_id,
-                result_repr=result_repr,
-                duration=duration,
-                context=ctx,
-            )
-        )
-
-    def on_async_transition(
-        self,
-        kind: Literal["await", "resume", "yield"],
-        func_name: str,
-        detail: str | None = None,
-    ) -> None:
-        if not self.active:
-            return
-
-        async_id: int | None = None
-        parent_async_id: int | None = None
-
-        if asyncio is not None:
-            try:
-                async_id = get_async_id()
-                if async_id is not None:
-                    parent_async_id = ASYNC_PARENT.get(async_id)
-            except Exception:
-                # если что-то странное с asyncio — просто не заполняем async_id
-                async_id = None
-                parent_async_id = None
-
-        ctx = self.get_execution_context()
-
-        ev = AsyncTransitionEvent(
-            id=len(self.events),
-            kind=kind,
-            func_name=func_name,
-            async_id=async_id,
-            parent_async_id=parent_async_id,
-            detail=detail,
-            context=ctx,
-        )
-        self.events.append(ev)
-
-    def get_current_call_id(self, func_name: str) -> int | None:
-        """Публичная обёртка над _current_call_event_id (для внешнего использования внутри ядра)."""
-        return self._current_call_event_id(func_name)
-
-    def get_exc_depth(self, call_event_id: int) -> int:
-        """
-        Возвращает глубину traceback для данного вызова.
-        Если для конкретного call_id нет записи — используем дефолт.
-        """
-        return self._exc_depth_by_call.get(call_event_id, self.default_exc_tb_depth)
-
-    def _find_frame_index(self, func_name: str) -> int | None:
-        for i, (name, _, _) in enumerate(reversed(self.stack), start=1):
-            if name == func_name:
-                return len(self.stack) - i
-        return None
-
-    def _current_call_event_id(self, func_name: str) -> int | None:
-        idx = self._find_frame_index(func_name)
-        if idx is None:
-            return None
-        return self.stack[idx][2]
-
-    def _append_exception(
-        self,
-        call_event_id: int | None,
-        func_name: str,
-        exc_type: str,
-        exc_msg: str,
-        caught: bool | None,
-        exc_tb: str | None = None,
-    ) -> int:
-        ctx = self.get_execution_context()
-
-        ev = ExceptionEvent(
-            id=len(self.events),
-            func_name=func_name,
-            parent_id=call_event_id,
-            exc_type=exc_type,
-            exc_msg=exc_msg,
-            caught=caught,
-            via_exception=False,  # это просто “исключение произошло”, а не “return через exc”
-            exc_tb=exc_tb,
-            context=ctx,
-        )
-
-        self.events.append(ev)
-
-        if call_event_id is not None:
-            # текущая активная запись исключения этого фрейма
-            self.current_exc_by_call[call_event_id] = ev.id
-        return ev.id
-
-    def on_exception_raised(
-        self,
-        func_name: str,
-        exc_type: str,
-        exc_msg: str,
-        exc_tb: str | None = None,
-    ) -> None:
-        # при raised exception мы еще не знаем судьбу этого exception, поэтому его статус будет None.
-        if not self.active:
-            return
-
-        call_id = self._current_call_event_id(func_name)
-
-        self._append_exception(call_id, func_name, exc_type, exc_msg, caught=None, exc_tb=exc_tb)
-
-    def on_exception_handled(self, func_name: str, exc_type: str, exc_msg: str) -> None:
-        # если exception попадает в EXCEPTION_HANDLED, то except уже сработал - убираем из открытых
-        if not self.active:
-            return
-
-        call_id = self._current_call_event_id(func_name)
-        if call_id is None:
-            self._append_exception(None, func_name, exc_type, exc_msg, caught=True)
-            return
-
-        ev_id = self.current_exc_by_call.get(call_id)
-        if ev_id is not None:
-            ev = self.events[ev_id]
-            if isinstance(ev, ExceptionEvent):
-                ev.caught = True
-        else:
-            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
-
-    def on_unwind(self, func_name, exc_type, exc_msg):
-        # сигнал о сворачивании кадра из-за exception, но не означает, что exception поймали.
-        if not self.active:
-            return
-        idx = self._find_frame_index(func_name)
-        if idx is not None:
-            _, start, call_id = self.stack[idx]
-            duration = None
-            if start:
-                duration = perf_counter() - start if start > 0.0 else None
-
-            ctx = self.get_execution_context()
-
-            self.events.append(
-                CallEvent(
-                    id=len(self.events),
-                    kind="return",
-                    func_name=func_name,
-                    parent_id=call_id,
-                    result_repr=None,
-                    duration=duration,
-                    via_exception=True,
-                    context=ctx,
-                )
-            )
-
-        current_call_id: int | None = self._current_call_event_id(func_name)
-        if current_call_id is not None:
-            ev_id = self.current_exc_by_call.get(current_call_id)
-            if ev_id is not None:
-                # уже есть активная — просто idempotent обновление
-                ev = self.events[ev_id]
-                if isinstance(ev, ExceptionEvent) and ev.caught is not False:
-                    ev.caught = False
-            else:
-                # вообще не было записи → создадим одну «propagated»
-                self._append_exception(current_call_id, func_name, exc_type, exc_msg, caught=False)
-            # фрейм завершился исключением — чистим маркеры
-            self.current_exc_by_call.pop(current_call_id, None)
-
-        # снимаем фрейм
-        if idx is not None:
-            del self.stack[idx:]
-
-    def on_reraise(self, func_name, exc_type, exc_msg):
-        # сигнал о том, что исключение не погашено данным кадром и улетает дальше.
-        if not self.active:
-            return
-        call_id = self._current_call_event_id(func_name)
-        if call_id is None:
-            self._append_exception(None, func_name, exc_type, exc_msg, caught=False)
-            return
-        ev_id = self.current_exc_by_call.get(call_id)
-        if ev_id is not None:
-            ev = self.events[ev_id]
-            if isinstance(ev, ExceptionEvent):
-                ev.caught = False
-        else:
-            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
-
-    def push_meta_for_func(
-        self,
-        func_name: str,
-        *,
-        args_repr: str | None,
-        collect_args: bool,
-        collect_result: bool,
-        collect_timing: bool,
-        exc_tb_depth: int,
-    ):
-        """Кладём готовые метаданные ДЛЯ СЛЕДУЮЩЕГО вызова данной функции."""
-        self.pending_meta[func_name].append((
-            args_repr,
-            collect_args,
-            collect_result,
-            collect_timing,
-            exc_tb_depth,
-        ))
-
-    @staticmethod
-    def get_execution_context() -> ExecutionContext:
-        """Возвращает свежий ExecutionContext для текущего события."""
-        thread_id = threading.get_ident()
-        task_id = None
-        parent_id = None
-        task_name = None
-
-        try:
-            task = asyncio.current_task()
-        except RuntimeError:
-            task = None
-
-        if task is not None:
-            task_id = get_async_id(task)
-            if task_id is not None:
-                parent_id = ASYNC_PARENT.get(task_id)
-            with suppress(Exception):
-                task_name = task.get_name()
-
-        return ExecutionContext(
-            thread_id=thread_id,
-            task_id=task_id,
-            task_parent_id=parent_id,
-            task_name=task_name,
-        )
-
-    def _handle_raise(self, func_name: str, exc: BaseException | None):
-        if not self.active:
-            return
-
-        exc_type = type(exc).__name__ if exc is not None else "<unknown>"
-        exc_msg = str(exc) if exc is not None else ""
-
-        call_id = self.get_current_call_id(func_name)
-        if call_id is None and self.stack:
-            _, _, call_id = self.stack[-1]
-
-        depth = self.get_exc_depth(call_id if call_id is not None else -1)
-
-        tb_text = None
-        if exc is not None and depth > 0:
-            tb = exc.__traceback__
-            if tb:
-                raw_frames = traceback.extract_tb(tb)
-
-                # фильтр по user-path
-                from flowtrace.monitoring import _is_user_path
-
-                frames = [f for f in raw_frames if _is_user_path(f.filename)]
-
-                if not frames:
-                    frames = raw_frames
-
-                frames = frames[-depth:]
-
-                tb_text = " | ".join(
-                    f"{Path(fr.filename).name}:{fr.lineno} in {fr.name}" for fr in frames
-                )
-
-        self.on_exception_raised(func_name, exc_type, exc_msg, tb_text)
-
-    def _handle_reraise(self, func_name: str, exc: BaseException | None):
-        if not self.active:
-            return
-
-        exc_type = type(exc).__name__ if exc is not None else "<unknown>"
-        exc_msg = str(exc) if exc is not None else ""
-
-        self.on_reraise(func_name, exc_type, exc_msg)
-
-    def _handle_exc_handled(self, func_name: str, exc: BaseException | None):
-        if not self.active:
-            return
-
-        exc_type = type(exc).__name__ if exc is not None else "<unknown>"
-        exc_msg = str(exc) if exc is not None else ""
-
-        self.on_exception_handled(func_name, exc_type, exc_msg)
-
-    def _handle_unwind(self, func_name: str, exc: BaseException | None):
-        if not self.active:
-            return
-
-        exc_type = type(exc).__name__ if exc is not None else "<unknown>"
-        exc_msg = str(exc) if exc is not None else ""
-
-        self.on_unwind(func_name, exc_type, exc_msg)
-
-    @staticmethod
-    def _resolve_real_name(code, default: str) -> str:
-        REAL = default
-        try:
-            import gc
-            import inspect
-
-            for obj in gc.get_referrers(code):
-                if (inspect.isfunction(obj) or inspect.ismethod(obj)) and getattr(
-                    obj, "__code__", None
-                ) is code:
-                    real = getattr(obj, "__flowtrace_real_name__", None)
-                    if real:
-                        REAL = real
-                    break
-        except Exception:
-            pass
-        return REAL
-
-    @staticmethod
-    def _safe_repr(value) -> str | None:
-        if value is None:
-            return None
-        try:
-            r = repr(value)
-            return r if len(r) <= 80 else r[:77] + "..."
-        except Exception:
-            return "<unrepr>"
-
-    def on_raw_event(self, label: str, code, raw):
-        if not _is_user_code(code):
-            return
-        func_name = self._resolve_real_name(code, code.co_name)
-
-        is_async_gen = _is_async_gen_code(code)
-        is_coro = _is_coroutine_code(code)
-
-        if label == "PY_START":
-            self.on_call(func_name)
-
-        elif label == "PY_RETURN":
-            value = raw[-1] if raw else None
-            self.on_return(func_name, value)
-
-        elif label == "RAISE":
-            exc = raw[-1] if raw else None
-            self._handle_raise(func_name, exc)
-
-        elif label == "RERAISE":
-            exc = raw[-1] if raw else None
-            self._handle_reraise(func_name, exc)
-
-        elif label == "EXCEPTION_HANDLED":
-            exc = raw[-1] if raw else None
-            self._handle_exc_handled(func_name, exc)
-
-        elif label == "PY_UNWIND":
-            exc = raw[-1] if raw else None
-            self._handle_unwind(func_name, exc)
-
-        elif label == "PY_RESUME":
-            self.on_async_transition("resume", func_name)
-
-        elif label == "PY_YIELD":
-            value = raw[-1] if raw else None
-            detail = self._safe_repr(value)
-
-            if is_async_gen:
-                # async-генератор отдает значение пользователю
-                kind: Literal["await", "resume", "yield"] = "yield"
-            elif is_coro:
-                # корутина "уходит в await" (yield в event loop)
-                kind = "await"
-            else:
-                # обычный генератор - считаем просто yield
-                kind = "yield"
-
-            self.on_async_transition(kind, func_name, detail)
-
-
-def _is_async_gen_code(code) -> bool:
-    """True, если это async-генератор (async def + yield)."""
-    try:
-        return bool(code.co_flags & inspect.CO_ASYNC_GENERATOR)
-    except Exception:
-        return False
-
-
-def _is_coroutine_code(code) -> bool:
-    """True, если это "чистая" корутина (async def без async-yield)."""
-    try:
-        return bool(code.co_flags & inspect.CO_COROUTINE) and not _is_async_gen_code(code)
-    except Exception:
-        return False
+        return self.state.events

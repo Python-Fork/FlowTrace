@@ -31,11 +31,11 @@ def start_tracing(
 
     # 1. Создаём новую сессию
     sess = TraceSession(
-        default_collect_args=(cfg.show_args if default_show_args is None else default_show_args),
-        default_collect_result=(
+        default_show_args=(cfg.show_args if default_show_args is None else default_show_args),
+        default_show_result=(
             cfg.show_result if default_show_result is None else default_show_result
         ),
-        default_collect_timing=(
+        default_show_timing=(
             cfg.show_timing if default_show_timing is None else default_show_timing
         ),
         default_exc_tb_depth=(
@@ -58,7 +58,7 @@ def start_tracing(
 
 def is_tracing_active() -> bool:
     sess = _CURRENT_SESSION.get()
-    return bool(sess and sess.active)
+    return bool(sess and sess.state.active)
 
 
 def stop_tracing() -> list[TraceEvent]:

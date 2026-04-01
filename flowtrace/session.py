@@ -34,9 +34,9 @@ CURRENT_SESSION: ContextVar[TraceSession | None] = ContextVar(
 class ActiveCall:
     """Активный вызов в стеке."""
 
+    call_event_id: int
     func_name: str
     start_time: float
-    call_event_id: int
 
 
 @dataclass(slots=True)
@@ -99,67 +99,61 @@ class ExecutionContextProvider:
 
 class CallStackInspector:
     """
-    Read-only helper для работы со стеком вызовов (SessionState.stack).
+    Read-only helper для работы со стеком активных вызовов.
 
-    Предоставляет удобные методы для поиска
-    и получения информации об активных вызовах.
+    Инспектор не изменяет состояние трассировки и предоставляет
+    только безопасные методы чтения текущего стека вызовов.
+    Основной идентификатор вызова — ``call_event_id``.
     """
 
-    def __init__(self, state: SessionState):
+    def __init__(self, state: SessionState) -> None:
         """
-        :param state: Общее состояние трассировки
+        Инициализирует инспектор стека вызовов.
         """
         self.state = state
 
-    # todo поиск фрейма не должен производиться по названию функции - не безопасно
-    def find_frame_index(self, func_name: str) -> int | None:
-        """
-        Ищет индекс последнего (верхнего) фрейма с данным именем функции.
-
-        Поиск идёт с конца стека (LIFO).
-
-        :param func_name: Имя функции
-        :return: индекс в стеке или None, если не найден
-        """
-        for i in range(len(self.state.stack) - 1, -1, -1):
-            active_call = self.state.stack[i]
-            if active_call.func_name == func_name:
-                return i
-        return None
-
-    def current_call_event_id(self, func_name: str) -> int | None:
-        """
-        Возвращает event_id текущего вызова функции.
-
-        :param func_name: Имя функции
-        :return: call_event_id или None, если фрейм не найден
-        """
-        idx = self.find_frame_index(func_name)
-        if idx is None:
-            return None
-        return self.state.stack[idx].call_event_id
-
-    def current_active_call(self, func_name: str) -> ActiveCall | None:
-        """
-        Возвращает объект ActiveCall для текущего вызова функции.
-
-        :param func_name: Имя функции
-        :return: ActiveCall или None, если не найден
-        """
-        idx = self.find_frame_index(func_name)
-        if idx is None:
-            return None
-        return self.state.stack[idx]
-
     def top_call(self) -> ActiveCall | None:
         """
-        Возвращает верхний элемент стека вызовов.
-
-        :return: ActiveCall или None, если стек пуст
+        Возвращает верхний активный вызов из стека.
         """
         if not self.state.stack:
             return None
         return self.state.stack[-1]
+
+    def top_call_event_id(self) -> int | None:
+        """
+        Возвращает ``call_event_id`` верхнего активного вызова.
+        """
+        active_call = self.top_call()
+        if active_call is None:
+            return None
+        return active_call.call_event_id
+
+    def find_by_call_event_id(self, call_event_id: int) -> ActiveCall | None:
+        """
+        Ищет активный вызов в стеке по ``call_event_id``.
+
+        Поиск выполняется с конца стека, так как наиболее
+        вероятно нужный вызов находится ближе к вершине.
+        """
+        for active_call in reversed(self.state.stack):
+            if active_call.call_event_id == call_event_id:
+                return active_call
+        return None
+
+    def current_call_event_id(self) -> int | None:
+        """
+        Возвращает ``call_event_id`` текущего активного вызова.
+        Это алиас для идентификатора верхнего вызова в стеке.
+        """
+        return self.top_call_event_id()
+
+    def current_active_call(self) -> ActiveCall | None:
+        """
+        Возвращает текущий активный вызов.
+        Это алиас верхнего элемента стека вызовов.
+        """
+        return self.top_call()
 
 
 class CallTracker:
@@ -239,9 +233,8 @@ class CallTracker:
             exc_tb_depth=self.default_exc_tb_depth,
         )
 
-    def _close_call(
+    def _close_top_call(
         self,
-        func_name: str,
         *,
         result: Any = None,
         via_exception: bool = False,
@@ -249,12 +242,12 @@ class CallTracker:
         if not self.state.active:
             return None
 
-        frame_index = self.stack_inspector.find_frame_index(func_name)
-        if frame_index is None:
+        active_call = self.stack_inspector.current_active_call()
+        if active_call is None:
             return None
 
-        active_call = self.state.stack[frame_index]
         call_event_id = active_call.call_event_id
+        func_name = active_call.func_name
         start_time = active_call.start_time
 
         call_ev = self.state.events[call_event_id]
@@ -294,14 +287,14 @@ class CallTracker:
             )
         )
 
-        del self.state.stack[frame_index:]
+        self.state.stack.pop()
         return call_event_id
 
-    def on_return(self, func_name: str, result: Any = None) -> None:
-        self._close_call(func_name, result=result, via_exception=False)
+    def on_return(self, result: Any = None) -> None:
+        self._close_top_call(result=result, via_exception=False)
 
-    def close_via_exception(self, func_name: str) -> int | None:
-        return self._close_call(func_name, via_exception=True)
+    def close_via_exception(self) -> int | None:
+        return self._close_top_call(via_exception=False)
 
 
 class ExceptionTracker:
@@ -358,69 +351,71 @@ class ExceptionTracker:
         if not self.state.active:
             return
 
-        call_id = self.stack_inspector.current_call_event_id(func_name)
+        call_event_id = self.stack_inspector.current_call_event_id()
 
-        self._append_exception(call_id, func_name, exc_type, exc_msg, caught=None, exc_tb=exc_tb)
+        self._append_exception(
+            call_event_id, func_name, exc_type, exc_msg, caught=None, exc_tb=exc_tb
+        )
 
     def on_exception_handled(self, func_name: str, exc_type: str, exc_msg: str) -> None:
         # если exception попадает в EXCEPTION_HANDLED, то except уже сработал - убираем из открытых
         if not self.state.active:
             return
 
-        call_id = self.stack_inspector.current_call_event_id(func_name)
-        if call_id is None:
+        call_event_id = self.stack_inspector.current_call_event_id()
+        if call_event_id is None:
             self._append_exception(None, func_name, exc_type, exc_msg, caught=True)
             return
 
-        ev_id = self.state.current_exc_by_call.pop(call_id, None)
+        ev_id = self.state.current_exc_by_call.pop(call_event_id, None)
         if ev_id is not None:
             ev = self.state.events[ev_id]
             if isinstance(ev, ExceptionEvent):
                 ev.caught = True
             else:
-                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
+                self._append_exception(call_event_id, func_name, exc_type, exc_msg, caught=True)
         else:
-            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=True)
+            self._append_exception(call_event_id, func_name, exc_type, exc_msg, caught=True)
 
     def on_unwind(self, func_name, exc_type, exc_msg):
         # сигнал о сворачивании кадра из-за exception, но не означает, что exception поймали.
         if not self.state.active:
             return
 
-        call_id = self.stack_inspector.current_call_event_id(func_name)
+        call_event_id = self.stack_inspector.current_call_event_id()
 
-        if call_id is not None:
-            ev_id = self.state.current_exc_by_call.get(call_id)
+        if call_event_id is not None:
+            ev_id = self.state.current_exc_by_call.get(call_event_id)
             if ev_id is not None:
                 ev = self.state.events[ev_id]
                 if isinstance(ev, ExceptionEvent) and ev.caught is not False:
                     ev.caught = False
             else:
-                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+                self._append_exception(call_event_id, func_name, exc_type, exc_msg, caught=False)
 
-        closed_call_id = self.call_tracker.close_via_exception(func_name)
-        if closed_call_id is not None:
-            self._clear_exception_state(closed_call_id)
+        closed_call_event_id = self.call_tracker.close_via_exception()
+        if closed_call_event_id is not None:
+            self._clear_exception_state(closed_call_event_id)
 
     def on_reraise(self, func_name, exc_type, exc_msg):
         # сигнал о том, что исключение не погашено данным кадром и улетает дальше.
         if not self.state.active:
             return
 
-        call_id = self.stack_inspector.current_call_event_id(func_name)
-        if call_id is None:
+        call_event_id = self.stack_inspector.current_call_event_id()
+        if call_event_id is None:
             self._append_exception(None, func_name, exc_type, exc_msg, caught=False)
             return
 
-        ev_id = self.state.current_exc_by_call.get(call_id)
+        ev_id = self.state.current_exc_by_call.get(call_event_id)
         if ev_id is not None:
             ev = self.state.events[ev_id]
             if isinstance(ev, ExceptionEvent):
                 ev.caught = False
             else:
-                self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+                self._append_exception(call_event_id, func_name, exc_type, exc_msg, caught=False)
         else:
-            self._append_exception(call_id, func_name, exc_type, exc_msg, caught=False)
+            self._append_exception(call_event_id, func_name, exc_type, exc_msg, caught=False)
 
     def _clear_exception_state(self, call_event_id: int) -> None:
         self.state.current_exc_by_call.pop(call_event_id, None)

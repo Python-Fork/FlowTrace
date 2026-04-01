@@ -47,7 +47,7 @@ class RawEventDispatcher:
 
         elif label == "PY_RETURN":
             value = raw[-1] if raw else None
-            self.call_tracker.on_return(func_name, value)
+            self.call_tracker.on_return(value)
             return
 
         elif label == "RAISE":
@@ -93,7 +93,7 @@ class RawEventDispatcher:
     def _dispatch_raise(self, func_name: str, exc: BaseException | None) -> None:
         exc_type, exc_msg = self._extract_exc_info(exc)
 
-        call_id = self.stack_inspector.current_call_event_id(func_name)
+        call_id = self.stack_inspector.current_call_event_id()
         if call_id is None and self.state.stack:
             call_id = self.state.stack[-1].call_event_id
 

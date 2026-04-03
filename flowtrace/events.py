@@ -31,9 +31,9 @@ class CallEvent:
     via_exception: bool | None = None
 
     # флаги того, что ДОЛЖНО было собираться для этого вызова
-    collect_args: bool = False
-    collect_result: bool = False
-    collect_timing: bool = False
+    show_args: bool = False
+    show_result: bool = False
+    show_timing: bool = False
 
     context: ExecutionContext | None = None
 
@@ -66,8 +66,10 @@ class AsyncTransitionEvent:
 class ExceptionEvent:
     """
     Отдельное событие исключения.
-    На следующих шагах постепенно заменим использование
-    exception-полей в CallEvent на этот тип.
+
+    Сейчас исключения моделируются отдельным типом события.
+    Финальная форма event-модели может быть пересмотрена позже
+    по мере стабилизации архитектуры TraceSession/trackers.
     """
 
     id: int

@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from flowtrace.monitoring import _is_user_code, _is_user_path
 
 if TYPE_CHECKING:
+    from types import CodeType
+
     from flowtrace.session import (
         AsyncTracker,
         CallStackInspector,
@@ -15,6 +17,54 @@ if TYPE_CHECKING:
         SessionState,
     )
 from flowtrace.utils.code_flags import is_async_gen_code, is_coroutine_code
+
+
+class CodeNameResolver:
+    """
+    Разрешает отображаемое имя функции по code object.
+
+    Использует внутренний кэш ``code -> resolved_name``, чтобы
+    не выполнять дорогой поиск через ``gc.get_referrers(...)``
+    на каждом raw-событии.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[CodeType, str] = {}
+
+    def resolve(self, code: CodeType) -> str:
+        """
+        Возвращает имя функции для указанного code object.
+
+        Сначала проверяет кэш. Если имя ещё не было вычислено,
+        пытается найти функцию или метод, ссылающийся на данный
+        ``code`` object, и извлечь ``__flowtrace_real_name__``.
+        Если это не удалось, использует ``code.co_name``.
+
+        :param code: Code object исполняемой функции.
+        :return: Разрешённое имя функции.
+        """
+        if code in self._cache:
+            return self._cache[code]
+
+        resolved_name = code.co_name
+
+        try:
+            import gc
+            import inspect
+
+            for obj in gc.get_referrers(code):
+                if (inspect.isfunction(obj) or inspect.ismethod(obj)) and getattr(
+                    obj, "__code__", None
+                ) is code:
+                    real = getattr(obj, "__flowtrace_real_name__", None)
+                    if real:
+                        resolved_name = real
+                    break
+        except Exception:
+            pass
+
+        self._cache[code] = resolved_name
+        return resolved_name
 
 
 class RawEventDispatcher:
@@ -35,11 +85,13 @@ class RawEventDispatcher:
         self.stack_inspector = stack_inspector
         self.default_exc_tb_depth = default_exc_tb_depth
 
-    def dispatch(self, label: str, code, raw: tuple[Any, ...]) -> None:
+        self.code_name_resolver = CodeNameResolver()
+
+    def dispatch(self, label: str, code: CodeType, raw: tuple[Any, ...]) -> None:
         if not _is_user_code(code):
             return
 
-        func_name = self._resolve_real_name(code, code.co_name)
+        func_name = self.code_name_resolver.resolve(code)
 
         if label == "PY_START":
             self.call_tracker.on_call(func_name)
@@ -93,12 +145,12 @@ class RawEventDispatcher:
     def _dispatch_raise(self, func_name: str, exc: BaseException | None) -> None:
         exc_type, exc_msg = self._extract_exc_info(exc)
 
-        call_id = self.stack_inspector.current_call_event_id()
-        if call_id is None and self.state.stack:
-            call_id = self.state.stack[-1].call_event_id
+        call_event_id = self.stack_inspector.current_call_event_id()
+        if call_event_id is None and self.state.stack:
+            call_event_id = self.state.stack[-1].call_event_id
 
         depth = self.state.exc_depth_by_call.get(
-            call_id if call_id is not None else -1,
+            call_event_id if call_event_id is not None else -1,
             self.default_exc_tb_depth,
         )
 
@@ -133,26 +185,6 @@ class RawEventDispatcher:
 
         frames = frames[-depth:]
         return " | ".join(f"{Path(fr.filename).name}:{fr.lineno} in {fr.name}" for fr in frames)
-
-    @staticmethod
-    def _resolve_real_name(code, default: str) -> str:
-        real_name = default
-        try:
-            import gc
-            import inspect
-
-            # todo узкое место производительности. кешировать code -> resolved_name
-            for obj in gc.get_referrers(code):
-                if (inspect.isfunction(obj) or inspect.ismethod(obj)) and getattr(
-                    obj, "__code__", None
-                ) is code:
-                    real = getattr(obj, "__flowtrace_real_name__", None)
-                    if real:
-                        real_name = real
-                    break
-        except Exception:
-            pass
-        return real_name
 
     @staticmethod
     def _safe_repr(value: Any) -> str | None:

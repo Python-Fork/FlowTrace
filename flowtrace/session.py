@@ -220,7 +220,7 @@ class CallTracker:
     def _resolve_meta(self, func_name: str) -> PendingCallMeta:
         q = self.state.pending_meta.get(func_name)
         if q:
-            meta = q.pop()
+            meta = q.pop(0)
             if not q:
                 self.state.pending_meta.pop(func_name, None)
             return meta
@@ -294,7 +294,7 @@ class CallTracker:
         self._close_top_call(result=result, via_exception=False)
 
     def close_via_exception(self) -> int | None:
-        return self._close_top_call(via_exception=False)
+        return self._close_top_call(via_exception=True)
 
 
 class ExceptionTracker:
